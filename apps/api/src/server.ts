@@ -113,6 +113,11 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
   app.get('/v1/health/live', { config: { rateLimit: false } }, async () => ({ status: 'ok', environment: 'mainnet' }))
   app.get('/v1/health/ready', { config: { rateLimit: false } }, async (_, reply) => {
     const missing = readiness(config)
+    try {
+      await stateStore.ping()
+    } catch {
+      missing.push('STATE_CACHE_CONNECTION')
+    }
     return reply.code(missing.length === 0 ? 200 : 503).send({ ready: missing.length === 0, missing })
   })
 

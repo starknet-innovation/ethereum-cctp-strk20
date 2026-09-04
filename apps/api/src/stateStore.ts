@@ -3,6 +3,7 @@ import { Cluster } from 'iovalkey'
 export interface StateStore {
   get(key: string): Promise<string | undefined>
   set(key: string, value: string, ttlSeconds: number): Promise<void>
+  ping(): Promise<void>
   close(): Promise<void>
 }
 
@@ -27,6 +28,8 @@ export class MemoryStateStore implements StateStore {
   async set(key: string, value: string, ttlSeconds: number): Promise<void> {
     this.values.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1_000 })
   }
+
+  async ping(): Promise<void> {}
 
   async close(): Promise<void> {}
 }
@@ -64,6 +67,11 @@ export class ValkeyStateStore implements StateStore {
   async set(key: string, value: string, ttlSeconds: number): Promise<void> {
     await this.connect()
     await this.client.set(key, value, 'EX', ttlSeconds)
+  }
+
+  async ping(): Promise<void> {
+    await this.connect()
+    await this.client.ping()
   }
 
   async close(): Promise<void> {
