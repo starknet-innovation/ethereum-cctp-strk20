@@ -37,6 +37,11 @@ interface CallAndProof {
   proof: { data: string; proofFacts: string[] }
 }
 
+export interface PaymasterCapability {
+  flowId: string
+  flowToken: string
+}
+
 export async function waitForCircleAttestation(
   ethereumTxHash: string,
   timeoutMs = 30 * 60_000,
@@ -58,9 +63,10 @@ export async function sponsoredMint(
   identity: EphemeralIdentity,
   message: `0x${string}`,
   attestation: `0x${string}`,
+  capability: PaymasterCapability,
 ): Promise<string> {
   const provider = providerForApp()
-  const paymaster = new PaymasterRpc({ nodeUrl: PAYMASTER_URL })
+  const paymaster = new PaymasterRpc({ nodeUrl: PAYMASTER_URL, headers: paymasterHeaders(capability) })
   const account = new Account({
     provider,
     address: identity.address,
@@ -126,6 +132,7 @@ export async function waitForPrivacyProvingReadyAfterTx(
 export async function sponsoredPrivacyDeposit(args: {
   identity: EphemeralIdentity
   amount: bigint
+  capability: PaymasterCapability
 }): Promise<{ txHash: string; privateAmount: bigint }> {
   if (args.amount <= 0n) throw new Error('No Starknet USDC is available to shield')
   const mode = privateFeeMode()
@@ -145,7 +152,7 @@ export async function sponsoredPrivacyDeposit(args: {
       apply_action: { pool_address: felt(CHAIN.starknet.privacyPool) },
     },
     parameters: { version: '0x1', fee_mode: mode },
-  })
+  }, args.capability)
   const fee = validateFee(built.fee_action, CHAIN.starknet.usdc, args.amount)
 
   const result = await withFreshProvingBlock(() => {
@@ -174,6 +181,7 @@ export async function sponsoredPrivacyDeposit(args: {
     signature,
     callAndProof: result.callAndProof as CallAndProof,
     mode,
+    capability: args.capability,
   })
   await waitForSuccessfulTransaction(providerForApp(), response.transaction_hash)
   return { txHash: response.transaction_hash, privateAmount: args.amount - fee }
@@ -186,6 +194,7 @@ export async function sponsoredPrivacyExit(args: {
   settlement: string
   cctpExitAnonymizer: string
   cctpMaxFee: bigint
+  capability: PaymasterCapability
 }): Promise<string> {
   const mode = privateFeeMode()
   const built = await paymasterRpc<{ type: 'apply_action'; fee_action: FeeAction }>(
@@ -197,6 +206,7 @@ export async function sponsoredPrivacyExit(args: {
       },
       parameters: { version: '0x1', fee_mode: mode },
     },
+    args.capability,
   )
   const fee = validateFee(built.fee_action, CHAIN.starknet.usdc, args.privateAmount)
   const amountToBridge = args.privateAmount - fee
@@ -239,7 +249,7 @@ export async function sponsoredPrivacyExit(args: {
       },
     },
     parameters: { version: '0x1', fee_mode: mode },
-  })
+  }, args.capability)
   await waitForSuccessfulTransaction(providerForApp(), response.transaction_hash)
   return response.transaction_hash
 }
@@ -250,6 +260,7 @@ async function executeInvokeAndApply(args: {
   signature: string[]
   callAndProof: CallAndProof
   mode: ReturnType<typeof privateFeeMode>
+  capability: PaymasterCapability
 }): Promise<{ transaction_hash: string }> {
   return paymasterRpc('paymaster_executeTransaction', {
     transaction: {
@@ -266,7 +277,7 @@ async function executeInvokeAndApply(args: {
       },
     },
     parameters: { version: '0x1', fee_mode: args.mode },
-  })
+  }, args.capability)
 }
 
 function poolClient(identity: EphemeralIdentity) {
@@ -301,10 +312,10 @@ async function withFreshProvingBlock<T extends { execute(options: { provingBlock
   throw lastError
 }
 
-async function paymasterRpc<T>(method: string, params: unknown): Promise<T> {
+async function paymasterRpc<T>(method: string, params: unknown, capability: PaymasterCapability): Promise<T> {
   const response = await fetch(PAYMASTER_URL, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...paymasterHeaders(capability) },
     body: JSON.stringify({ jsonrpc: '2.0', id: crypto.randomUUID(), method, params }),
   })
   const json = (await response.json()) as {
@@ -316,6 +327,10 @@ async function paymasterRpc<T>(method: string, params: unknown): Promise<T> {
     throw new Error(`Paymaster ${method} failed: ${json.error?.message ?? response.status}${detail}`)
   }
   return json.result
+}
+
+function paymasterHeaders(capability: PaymasterCapability): Record<string, string> {
+  return { 'x-flow-id': capability.flowId, 'x-flow-token': capability.flowToken }
 }
 
 function privateFeeMode() {

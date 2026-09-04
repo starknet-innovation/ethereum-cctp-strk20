@@ -55,7 +55,8 @@ The browser never sends the Stark private key or privacy viewing key to the API.
   forwards only explicit-block Invoke proofs, never exposes the operator key, and persists every
   one-time terminal response before delivering it to the browser.
 - Proxies only the configured Starknet RPC, discovery, and AVNU paymaster origins, keeping provider
-  credentials server-side.
+  credentials server-side. AVNU sponsorship additionally requires a per-flow capability and is
+  restricted to the expected account, lifecycle phase, CCTP receiver, privacy pool, and fee token.
 - Proxies Circle attestations.
 - Sponsors deterministic settlement creation and the permissionless final `settle()` call.
 

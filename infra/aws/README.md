@@ -18,7 +18,9 @@ The ECR repository uses immutable tags and scan-on-push. Untagged images expire 
 
 ## Secrets
 
-CloudFormation generates the flow-token and Valkey secrets. The runtime secret starts with blank RPC, discovery, paymaster, contract-address, and relayer-key fields; add the operator-issued `STARKSCAN_API_KEY` with `prove` scope out of band as well. ECS injects the JSON object as one opaque secret and the API parses only its allow-listed configuration fields, so new keys do not require rotating the secret or changing the task definition. The original dormant `PROVER_URL` bootstrap field remains only to avoid regenerating and wiping an established secret; the API ignores it. Populate the active fields before treating `/v1/health/ready` as healthy. Never place secret values in CloudFormation parameters, shell output, Vercel variables, or source control.
+CloudFormation generates the flow-token and Valkey secrets. The runtime secret starts with blank RPC, discovery, paymaster, contract-address, and relayer-key fields; add the operator-issued `STARKSCAN_API_KEY` with `prove` scope and `AVNU_PAYMASTER_API_KEY` out of band as well. ECS injects the JSON object as one opaque secret and the API parses only its allow-listed configuration fields, so new keys do not require rotating the secret or changing the task definition. The original dormant `PROVER_URL` bootstrap field remains only to avoid regenerating and wiping an established secret; the API ignores it. Populate the active fields before treating `/v1/health/ready` as healthy. Never place secret values in CloudFormation parameters, shell output, Vercel variables, or source control.
+
+The AVNU key is attached only by the backend. Browser requests to the paymaster proxy must present the existing per-flow capability, and the API restricts sponsored calls to the flow's Starknet account, lifecycle phase, CCTP receiver, privacy pool, and USDC fee token.
 
 ## Network
 

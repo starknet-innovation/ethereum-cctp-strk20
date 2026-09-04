@@ -9,6 +9,7 @@ import {
   type ProofRelayJob,
   type ProofRelaySubmission,
   type PublicConfig,
+  type PublicFlow,
 } from '@privacy-round-trip/shared'
 import { z } from 'zod'
 import {
@@ -42,6 +43,15 @@ const settlementParam = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}
 const proofJobParam = z.object({ jobId: z.string().regex(/^prv_[A-Za-z0-9_-]{8,128}$/) })
 const proofPollTokenSchema = z.string().regex(/^[0-9a-f]{64}$/)
 const proofIdempotencyKeySchema = z.string().regex(/^[\x21\x23-\x7e]{16,128}$/)
+const flowIdSchema = z.string().regex(/^f_[0-9a-f]{32}$/)
+const paymasterRequestSchema = z
+  .object({
+    jsonrpc: z.literal('2.0'),
+    id: z.union([z.string(), z.number(), z.null()]).optional(),
+    method: z.enum(['paymaster_buildTransaction', 'paymaster_executeTransaction']),
+    params: z.record(z.unknown()),
+  })
+  .passthrough()
 const proofResultSchema = z
   .object({
     proof: z.string().min(1),
@@ -446,7 +456,7 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
   )
 
   registerOpaqueProxy(app, '/proxy/discovery', config.DISCOVERY_URL, fetchImpl)
-  registerOpaqueProxy(app, '/proxy/paymaster', config.PAYMASTER_URL, fetchImpl)
+  registerPaymasterProxy(app, config, flowStore, fetchImpl)
   registerOpaqueProxy(app, '/proxy/starknet-rpc', config.STARKNET_RPC_URL, fetchImpl)
 
   return app
@@ -594,6 +604,120 @@ function registerOpaqueProxy(
   }
   app.all(path, handler)
   app.all(`${path}/*`, handler)
+}
+
+function registerPaymasterProxy(
+  app: ReturnType<typeof Fastify>,
+  config: ApiConfig,
+  flowStore: FlowStore,
+  fetchImpl: typeof fetch,
+) {
+  app.post(
+    '/proxy/paymaster',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!config.PAYMASTER_URL || !config.AVNU_PAYMASTER_API_KEY) {
+        return reply.code(503).send({ error: 'AVNU Paymaster is not configured' })
+      }
+
+      const flowId = singleHeader(request.headers['x-flow-id'])
+      const token = flowToken(request.headers['x-flow-token'])
+      const flow = flowIdSchema.safeParse(flowId).success && token
+        ? await flowStore.read(flowId!, token)
+        : undefined
+      if (!flow) return reply.code(404).send({ error: 'Flow not found' })
+
+      const parsed = paymasterRequestSchema.safeParse(request.body)
+      if (!parsed.success) return reply.code(400).send({ error: 'Unsupported Paymaster request' })
+      if (!paymasterRequestAllowed(flow, parsed.data)) {
+        return reply.code(403).send({ error: 'Paymaster request is outside this flow' })
+      }
+
+      try {
+        const response = await fetchImpl(config.PAYMASTER_URL.replace(/\/$/, ''), {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: request.headers.accept ?? 'application/json',
+            'x-paymaster-api-key': config.AVNU_PAYMASTER_API_KEY,
+          },
+          body: JSON.stringify(parsed.data),
+          signal: AbortSignal.timeout(60_000),
+        })
+        const body = await response.arrayBuffer()
+        const retryAfter = response.headers.get('retry-after')
+        if (retryAfter) reply.header('retry-after', retryAfter)
+        return reply
+          .code(response.status)
+          .header('content-type', response.headers.get('content-type') ?? 'application/json')
+          .send(Buffer.from(body))
+      } catch (error) {
+        return reply.code(502).send({ error: safeError(error) })
+      }
+    },
+  )
+}
+
+function paymasterRequestAllowed(
+  flow: PublicFlow,
+  request: z.infer<typeof paymasterRequestSchema>,
+): boolean {
+  const transaction = record(request.params.transaction)
+  const parameters = record(request.params.parameters)
+  const feeMode = record(parameters?.fee_mode)
+  if (!transaction || parameters?.version !== '0x1' || !feeMode) return false
+
+  if (flow.phase === 'bridging-to-starknet') {
+    if (!['deploy_and_invoke', 'invoke'].includes(String(transaction.type))) return false
+    if (feeMode.mode !== 'sponsored') return false
+    const invoke = record(transaction.invoke)
+    if (!feltEquals(invoke?.user_address, flow.starknetAccount)) return false
+    if (request.method === 'paymaster_executeTransaction') return true
+    const calls = Array.isArray(invoke?.calls) ? invoke.calls : []
+    return calls.length === 1 && feltEquals(record(calls[0])?.to, CHAIN.starknet.cctp.messageTransmitterV2)
+  }
+
+  if (flow.phase === 'pool-depositing') {
+    if (transaction.type !== 'invoke_and_apply_action' || !privateUsdcFee(feeMode)) return false
+    const invoke = record(transaction.invoke)
+    if (!feltEquals(invoke?.user_address, flow.starknetAccount)) return false
+    if (request.method === 'paymaster_executeTransaction') return true
+    if (!expectedPool(transaction)) return false
+    const calls = Array.isArray(invoke?.calls) ? invoke.calls : []
+    const approve = calls.length === 1 ? record(calls[0]) : undefined
+    const calldata = Array.isArray(approve?.calldata) ? approve.calldata : []
+    return feltEquals(approve?.to, CHAIN.starknet.usdc) && feltEquals(calldata[0], CHAIN.starknet.privacyPool)
+  }
+
+  if (flow.phase === 'pool-withdrawing') {
+    if (transaction.type !== 'apply_action' || !privateUsdcFee(feeMode)) return false
+    return request.method === 'paymaster_executeTransaction' || expectedPool(transaction)
+  }
+
+  return false
+}
+
+function privateUsdcFee(feeMode: Record<string, unknown>): boolean {
+  return feeMode.mode === 'sponsored_private' && feltEquals(feeMode.pool_fee_token, CHAIN.starknet.usdc)
+}
+
+function expectedPool(transaction: Record<string, unknown>): boolean {
+  return feltEquals(record(transaction.apply_action)?.pool_address, CHAIN.starknet.privacyPool)
+}
+
+function feltEquals(actual: unknown, expected: string): boolean {
+  try {
+    return (typeof actual === 'string' || typeof actual === 'number' || typeof actual === 'bigint') &&
+      BigInt(actual) === BigInt(expected)
+  } catch {
+    return false
+  }
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
 }
 
 function flowToken(value: string | string[] | undefined): string | undefined {

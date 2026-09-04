@@ -8,6 +8,7 @@ describe('runtime configuration', () => {
         ETHEREUM_RPC_URL: 'https://secret-rpc.example',
         STARKNET_RPC_URL: 'https://starknet.example',
         STARKSCAN_API_KEY: 'operator-issued-key',
+        AVNU_PAYMASTER_API_KEY: 'avnu-operator-key',
         PROVER_URL: 'https://ignored-legacy.example',
       }),
       ETHEREUM_RPC_URL: 'https://explicit-rpc.example',
@@ -16,6 +17,7 @@ describe('runtime configuration', () => {
     expect(config.ETHEREUM_RPC_URL).toBe('https://explicit-rpc.example')
     expect(config.STARKNET_RPC_URL).toBe('https://starknet.example')
     expect(config.STARKSCAN_API_KEY).toBe('operator-issued-key')
+    expect(config.AVNU_PAYMASTER_API_KEY).toBe('avnu-operator-key')
     expect(config).not.toHaveProperty('PROVER_URL')
   })
 

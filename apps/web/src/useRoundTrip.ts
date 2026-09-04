@@ -165,6 +165,7 @@ export function useRoundTrip() {
         })
         currentFlow = created.flow
         writeToken = created.writeToken
+        const paymasterCapability = { flowId: created.flow.id, flowToken: created.writeToken }
         setFlow(currentFlow)
 
         setMessage(
@@ -192,6 +193,7 @@ export function useRoundTrip() {
           identity,
           attested.message,
           attested.attestation as `0x${string}`,
+          paymasterCapability,
         )
         await transition('starknet-funded', { txHash: mintHash })
 
@@ -202,7 +204,11 @@ export function useRoundTrip() {
 
         await transition('pool-depositing')
         setMessage('Generating the private deposit proof. This can take a few minutes…')
-        const deposit = await sponsoredPrivacyDeposit({ identity, amount: minted })
+        const deposit = await sponsoredPrivacyDeposit({
+          identity,
+          amount: minted,
+          capability: paymasterCapability,
+        })
         const depositedAt = new Date().toISOString()
         await transition('privacy-delay', {
           txHash: deposit.txHash,
@@ -252,6 +258,7 @@ export function useRoundTrip() {
           settlement: settlement.settlement,
           cctpExitAnonymizer: config.starknet.cctpExitAnonymizer,
           cctpMaxFee: BigInt(freshQuote.outboundCctpMaxFeeBase),
+          capability: paymasterCapability,
         })
         await transition('bridging-to-ethereum', {
           txHash: exitHash,
