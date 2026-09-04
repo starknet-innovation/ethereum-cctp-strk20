@@ -118,7 +118,9 @@
       "Action": [
         "ecs:CreateCluster",
         "ecs:CreateExpressGatewayService",
+        "ecs:DeleteCluster",
         "ecs:DeleteExpressGatewayService",
+        "ecs:DescribeClusters",
         "ecs:DescribeExpressGatewayService",
         "ecs:DescribeServiceDeployments",
         "ecs:DescribeServiceRevisions",

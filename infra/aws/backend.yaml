@@ -285,6 +285,18 @@ Resources:
         - Key: Environment
           Value: mainnet-poc
 
+  ApiCluster:
+    Type: AWS::ECS::Cluster
+    Metadata:
+      ContextRef: infra/aws/README.md#api-service
+    Properties:
+      ClusterName: ethereum-cctp-strk20
+      Tags:
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
   ApiService:
     Type: AWS::ECS::ExpressGatewayService
     Condition: DeployApi
@@ -292,7 +304,7 @@ Resources:
       ContextRef: infra/aws/README.md#api-service
     Properties:
       ServiceName: ethereum-cctp-strk20-api
-      Cluster: ethereum-cctp-strk20
+      Cluster: !Ref ApiCluster
       InfrastructureRoleArn: !Ref InfrastructureRoleArn
       ExecutionRoleArn: !Ref ExecutionRoleArn
       Cpu: '256'

@@ -26,7 +26,7 @@ API stdout and stderr are sent to `/ecs/ethereum-cctp-strk20-api` with 30-day re
 
 ## API service
 
-ECS Express Mode runs exactly one 0.25 vCPU / 512 MiB task for the POC. Its ALB health check uses `/v1/health/live`, while `/v1/health/ready` remains unavailable until all mainnet runtime values are configured.
+The stack creates a dedicated ECS cluster, then ECS Express Mode runs exactly one 0.25 vCPU / 512 MiB task for the POC. Its ALB health check uses `/v1/health/live`, while `/v1/health/ready` remains unavailable until all mainnet runtime values are configured.
 
 ## Two-phase deployment
 
