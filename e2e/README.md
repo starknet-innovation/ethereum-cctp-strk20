@@ -49,5 +49,5 @@ time and repeat for each pair listed in the architecture gate.
 ## CI
 
 `.github/workflows/e2e-mainnet.yml` runs the Foundry, live and anvil layers on manual dispatch
-using the `E2E_ETHEREUM_RPC_URL` and `E2E_STARKNET_RPC_URL` secrets plus optional deployment
+using the `ETHEREUM_RPC_URL` and `STARKNET_RPC_URL` secrets plus optional deployment
 variables. The canary is never run in CI.

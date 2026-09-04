@@ -25,8 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      ETHEREUM_RPC_URL: ${{ secrets.E2E_ETHEREUM_RPC_URL }}
-      STARKNET_RPC_URL: ${{ secrets.E2E_STARKNET_RPC_URL }}
+      ETHEREUM_RPC_URL: ${{ secrets.ETHEREUM_RPC_URL }}
+      STARKNET_RPC_URL: ${{ secrets.STARKNET_RPC_URL }}
       ETHEREUM_FORK_BLOCK: ${{ inputs.fork_block }}
       ETHEREUM_ENTRY_ROUTER: ${{ vars.ETHEREUM_ENTRY_ROUTER }}
       ETHEREUM_EXIT_SETTLEMENT_FACTORY: ${{ vars.ETHEREUM_EXIT_SETTLEMENT_FACTORY }}
@@ -42,7 +42,7 @@ jobs:
       - name: Require RPC configuration
         run: |
           if [ -z "$ETHEREUM_RPC_URL" ]; then
-            echo "Set the E2E_ETHEREUM_RPC_URL repository secret before running this workflow." >&2
+            echo "Set the ETHEREUM_RPC_URL repository secret before running this workflow." >&2
             exit 1
           fi
 
