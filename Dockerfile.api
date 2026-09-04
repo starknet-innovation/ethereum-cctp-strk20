@@ -11,14 +11,24 @@ RUN npm ci
 COPY tsconfig.base.json ./
 COPY apps/api apps/api
 COPY packages/shared packages/shared
-RUN npm run build -w @privacy-round-trip/shared && npm run build -w @privacy-round-trip/api && npm prune --omit=dev
+RUN npm run build -w @privacy-round-trip/shared && npm run build -w @privacy-round-trip/api
+
+FROM node:24.8.0-bookworm-slim AS production-deps
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/shared/package.json packages/shared/package.json
+COPY vendor vendor
+RUN npm ci --omit=dev --workspace @privacy-round-trip/api --workspace @privacy-round-trip/shared
 
 FROM node:24.8.0-bookworm-slim AS runtime
 
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=builder --chown=node:node /app/package.json /app/package-lock.json ./
-COPY --from=builder --chown=node:node /app/node_modules node_modules
+COPY --from=production-deps --chown=node:node /app/node_modules node_modules
 COPY --from=builder --chown=node:node /app/apps/api/package.json apps/api/package.json
 COPY --from=builder --chown=node:node /app/apps/api/dist apps/api/dist
 COPY --from=builder --chown=node:node /app/packages/shared/package.json packages/shared/package.json
