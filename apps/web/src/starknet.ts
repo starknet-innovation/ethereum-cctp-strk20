@@ -2,7 +2,6 @@ import { createPrivateTransfers } from '@starkware-libs/starknet-privacy-sdk'
 import { CHAIN, FORWARDING_HOOK_DATA } from '@privacy-round-trip/shared'
 import {
   Account,
-  constants,
   hash,
   PaymasterRpc,
   RpcProvider,
@@ -12,10 +11,10 @@ import {
 } from 'starknet'
 import { api, type CircleMessage } from './api.js'
 import type { EphemeralIdentity } from './identity.js'
+import { StarkscanProofProvider } from './starkscanProofProvider.js'
 
 const RPC_URL = `${api.baseUrl}/proxy/starknet-rpc`
 const PAYMASTER_URL = `${api.baseUrl}/proxy/paymaster`
-const PROVER_URL = `${api.baseUrl}/proxy/prover`
 const DISCOVERY_URL = `${api.baseUrl}/proxy/discovery`
 const PROVING_BLOCK_DEPTH = 10
 const POLL_MS = 5_000
@@ -274,12 +273,11 @@ function poolClient(identity: EphemeralIdentity) {
   return createPrivateTransfers({
     account: { address: identity.address, signer: identity.signer },
     viewingKeyProvider: { getViewingKey: async () => identity.viewingKey },
-    provingProvider: {
-      url: PROVER_URL,
-      chainId: constants.StarknetChainId.SN_MAIN,
-      nodeUrl: RPC_URL,
-      requestTimeoutMs: 120_000,
-    },
+    provingProvider: new StarkscanProofProvider({
+      apiBaseUrl: api.baseUrl,
+      rpcUrl: RPC_URL,
+      poolAddress: CHAIN.starknet.privacyPool,
+    }),
     discoveryProvider: { url: DISCOVERY_URL },
     poolContractAddress: CHAIN.starknet.privacyPool,
   })
@@ -411,7 +409,7 @@ async function waitForSuccessfulTransaction(provider: RpcProvider, hashValue: st
 
 function isRetryableProofError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
-  return /too recent|base block|not deployed|reverted transactions|502|503|504/i.test(message)
+  return /too recent|base block|not deployed|reverted transactions|attestation.+validity|502|503|504/i.test(message)
 }
 
 function sleep(ms: number): Promise<void> {

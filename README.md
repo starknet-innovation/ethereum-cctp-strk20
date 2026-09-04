@@ -33,7 +33,7 @@ or a separately reviewed scoped delegation design.
 | Path | Responsibility |
 | --- | --- |
 | `apps/web` | Rabby connection, route form, ephemeral secrets, transaction submission, privacy flow and status UI |
-| `apps/api` | Mainnet quotes, Circle fee/attestation access, allow-listed prover/discovery proxying, public flow state |
+| `apps/api` | Mainnet quotes, Circle access, Starkscan proof jobs, allow-listed provider proxying, public flow state |
 | `packages/shared` | Mainnet constants, wire types, validation and lifecycle state machine |
 | `contracts/evm` | Entry router and immutable per-flow exit settlement contract |
 | `contracts/starknet` | Pool-only CCTP exit anonymizer |

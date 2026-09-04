@@ -98,6 +98,54 @@ export interface CreateFlowResponse {
   writeToken: string
 }
 
+export type ProofJobStatus =
+  | 'queued'
+  | 'dispatched'
+  | 'succeeded'
+  | 'failed'
+  | 'unavailable'
+  | 'unknown_delivery'
+
+export interface ProofRelayResult {
+  proof: string
+  proof_facts: string[]
+  l2_to_l1_messages: Array<{
+    from_address: string
+    to_address: string
+    payload: string[]
+  }>
+  additional_data?: {
+    signature?: {
+      issued_at: number
+      sig_r: string
+      sig_s: string
+    }
+  }
+}
+
+export interface ProofRelayJob {
+  jobId: string
+  status: ProofJobStatus
+  terminal: boolean
+  attemptCount?: number
+  queuePosition?: number
+  pollAfterSeconds?: number
+  createdAt?: string
+  completedAt?: string
+  result?: ProofRelayResult
+  error?: {
+    code?: string | number
+    message?: string
+    data?: unknown
+    source?: string
+  }
+  resultUnavailableReason?: string
+}
+
+export interface ProofRelaySubmission extends ProofRelayJob {
+  pollToken: string
+}
+
 export interface PublicConfig {
   environment: 'mainnet'
   ready: boolean

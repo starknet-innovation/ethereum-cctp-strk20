@@ -9,7 +9,7 @@ const schema = z.object({
   CORS_ORIGIN: z.string().url().default('http://localhost:5173'),
   ETHEREUM_RPC_URL: z.string().url().optional(),
   STARKNET_RPC_URL: z.string().url().optional(),
-  PROVER_URL: z.string().url().optional(),
+  STARKSCAN_API_KEY: z.string().min(1).optional(),
   DISCOVERY_URL: z.string().url().optional(),
   PAYMASTER_URL: z.string().url().optional(),
   ETHEREUM_ENTRY_ROUTER: address.optional(),
@@ -27,7 +27,23 @@ const schema = z.object({
 export type ApiConfig = z.infer<typeof schema>
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
-  return schema.parse(blankToUndefined(env))
+  return schema.parse(blankToUndefined({ ...runtimeSecret(env.RUNTIME_CONFIG), ...env }))
+}
+
+function runtimeSecret(value: string | undefined): NodeJS.ProcessEnv {
+  if (!value) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    throw new Error('RUNTIME_CONFIG must contain a JSON object')
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('RUNTIME_CONFIG must contain a JSON object')
+  }
+  return Object.fromEntries(
+    Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  )
 }
 
 function blankToUndefined(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -40,7 +56,7 @@ export function readiness(config: ApiConfig): string[] {
   const required: Array<[keyof ApiConfig, unknown]> = [
     ['ETHEREUM_RPC_URL', config.ETHEREUM_RPC_URL],
     ['STARKNET_RPC_URL', config.STARKNET_RPC_URL],
-    ['PROVER_URL', config.PROVER_URL],
+    ['STARKSCAN_API_KEY', config.STARKSCAN_API_KEY],
     ['DISCOVERY_URL', config.DISCOVERY_URL],
     ['PAYMASTER_URL', config.PAYMASTER_URL],
     ['ETHEREUM_ENTRY_ROUTER', config.ETHEREUM_ENTRY_ROUTER],

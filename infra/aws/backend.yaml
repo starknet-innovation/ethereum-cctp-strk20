@@ -114,6 +114,9 @@ Resources:
       Name: ethereum-cctp-strk20/runtime
       Description: Mainnet runtime configuration; populate placeholders before enabling live flows.
       GenerateSecretString:
+        # Keep the original bootstrap shape stable: changing this template would rotate the whole
+        # existing secret and erase values populated out of band. PROVER_URL is a dormant legacy
+        # field; the running task neither receives nor uses it.
         SecretStringTemplate: >-
           {"ETHEREUM_RPC_URL":"","STARKNET_RPC_URL":"","PROVER_URL":"","DISCOVERY_URL":"","PAYMASTER_URL":"","ETHEREUM_ENTRY_ROUTER":"","ETHEREUM_EXIT_SETTLEMENT_FACTORY":"","STARKNET_CCTP_EXIT_ANONYMIZER":"","ETHEREUM_RELAYER_PRIVATE_KEY":""}
         GenerateStringKey: FLOW_TOKEN_SECRET
@@ -237,7 +240,7 @@ Resources:
       ContextRef: infra/aws/README.md#durable-state
     Properties:
       ServerlessCacheName: ethereum-cctp-strk20-state
-      Description: Durable short-lived quote and flow state for the mainnet POC.
+      Description: Durable short-lived flow state and one-time proof relay results for the mainnet POC.
       Engine: valkey
       CacheUsageLimits:
         DataStorage:
@@ -334,26 +337,8 @@ Resources:
         Secrets:
           - Name: STATE_CACHE_PASSWORD
             ValueFrom: !Sub '${CacheCredentials}:password::'
-          - Name: ETHEREUM_RPC_URL
-            ValueFrom: !Sub '${RuntimeSecret}:ETHEREUM_RPC_URL::'
-          - Name: STARKNET_RPC_URL
-            ValueFrom: !Sub '${RuntimeSecret}:STARKNET_RPC_URL::'
-          - Name: PROVER_URL
-            ValueFrom: !Sub '${RuntimeSecret}:PROVER_URL::'
-          - Name: DISCOVERY_URL
-            ValueFrom: !Sub '${RuntimeSecret}:DISCOVERY_URL::'
-          - Name: PAYMASTER_URL
-            ValueFrom: !Sub '${RuntimeSecret}:PAYMASTER_URL::'
-          - Name: ETHEREUM_ENTRY_ROUTER
-            ValueFrom: !Sub '${RuntimeSecret}:ETHEREUM_ENTRY_ROUTER::'
-          - Name: ETHEREUM_EXIT_SETTLEMENT_FACTORY
-            ValueFrom: !Sub '${RuntimeSecret}:ETHEREUM_EXIT_SETTLEMENT_FACTORY::'
-          - Name: STARKNET_CCTP_EXIT_ANONYMIZER
-            ValueFrom: !Sub '${RuntimeSecret}:STARKNET_CCTP_EXIT_ANONYMIZER::'
-          - Name: ETHEREUM_RELAYER_PRIVATE_KEY
-            ValueFrom: !Sub '${RuntimeSecret}:ETHEREUM_RELAYER_PRIVATE_KEY::'
-          - Name: FLOW_TOKEN_SECRET
-            ValueFrom: !Sub '${RuntimeSecret}:FLOW_TOKEN_SECRET::'
+          - Name: RUNTIME_CONFIG
+            ValueFrom: !Ref RuntimeSecret
       NetworkConfiguration:
         Subnets:
           - !Ref SubnetA

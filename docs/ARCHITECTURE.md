@@ -36,7 +36,8 @@ delay is therefore `max(user delay, proof readiness)`.
 - Collects input/output token, amount, recipient, and delay.
 - Generates an independent random Stark signing key and privacy viewing key in memory.
 - Submits the Ethereum approval (if needed) and entry transaction.
-- Polls Circle Iris, submits the sponsored Starknet mint, and builds privacy proofs locally.
+- Polls Circle Iris, submits the sponsored Starknet mint, signs proof invocations locally, and
+  polls capability-protected Starkscan proof jobs through the API.
 - Holds the final recipient locally through the entry, bridge, deposit, and delay.
 - Requests a recipient-bound settlement only after the privacy delay.
 - Independently calls the factory's `predict` view and rejects a relayer response whose address
@@ -49,9 +50,12 @@ The browser never sends the Stark private key or privacy viewing key to the API.
 
 - Returns allow-listed mainnet configuration.
 - Quotes direct Uniswap V3 pools and current CCTP V2 fee ceilings.
-- Keeps POC flow progress in an in-memory, capability-protected store.
-- Proxies only the configured Starknet RPC, prover, discovery, and AVNU paymaster origins, keeping
-  provider credentials server-side.
+- Keeps POC flow progress in a short-lived, capability-protected Valkey store.
+- Adapts the authenticated, asynchronous Starkscan STRK20 proof relay to the privacy SDK. The API
+  forwards only explicit-block Invoke proofs, never exposes the operator key, and persists every
+  one-time terminal response before delivering it to the browser.
+- Proxies only the configured Starknet RPC, discovery, and AVNU paymaster origins, keeping provider
+  credentials server-side.
 - Proxies Circle attestations.
 - Sponsors deterministic settlement creation and the permissionless final `settle()` call.
 
@@ -161,7 +165,10 @@ Do not open the route button until all of these are complete:
 3. Confirm the deployed privacy-pool class hash is compatible with the vendored SDK.
 4. Configure funded, capped relayer and AVNU sponsor policies; never use an unrestricted treasury
    key.
-5. Put prover, discovery, RPC, and paymaster credentials behind the API proxy.
+5. Obtain an operator-issued Starkscan key with `prove` scope and confirm the mainnet
+   [STRK20 relay](https://starkscan.co/docs/api/strk20-prover) has been enabled; its documented
+   dormant state returns 404 to every caller. Keep that key and the discovery, RPC, and paymaster
+   credentials behind the API.
 6. Add edge rate limits, per-day gas budgets, alarms, and an emergency relayer shutdown.
 7. Run a forked end-to-end test, then a deliberately tiny mainnet canary for every token pair.
 8. Add durable state and an audited recovery design before calling the product resumable.

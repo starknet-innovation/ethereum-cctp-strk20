@@ -6,6 +6,8 @@ import {
   createFlowSchema,
   flowUpdateSchema,
   quoteRequestSchema,
+  type ProofRelayJob,
+  type ProofRelaySubmission,
   type PublicConfig,
 } from '@privacy-round-trip/shared'
 import { z } from 'zod'
@@ -18,7 +20,7 @@ import {
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { mainnet } from 'viem/chains'
-import { randomBytes } from 'node:crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { ApiConfig } from './config.js'
 import { readiness } from './config.js'
 import { FlowStore } from './flowStore.js'
@@ -37,6 +39,73 @@ const settlementRequest = z
   })
   .strict()
 const settlementParam = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}$/) })
+const proofJobParam = z.object({ jobId: z.string().regex(/^prv_[A-Za-z0-9_-]{8,128}$/) })
+const proofPollTokenSchema = z.string().regex(/^[0-9a-f]{64}$/)
+const proofIdempotencyKeySchema = z.string().regex(/^[\x21\x23-\x7e]{16,128}$/)
+const proofResultSchema = z
+  .object({
+    proof: z.string().min(1),
+    proof_facts: z.array(z.string()),
+    l2_to_l1_messages: z.array(
+      z
+        .object({
+          from_address: z.string(),
+          to_address: z.string(),
+          payload: z.array(z.string()),
+        })
+        .passthrough(),
+    ),
+    additional_data: z
+      .object({
+        signature: z
+          .object({ issued_at: z.number().int(), sig_r: z.string(), sig_s: z.string() })
+          .strict()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
+const proofRequestSchema = z
+  .object({
+    block_id: z.object({ block_number: z.number().int().nonnegative() }).strict(),
+    transaction: z.object({ type: z.literal('INVOKE') }).passthrough(),
+  })
+  .strict()
+const proofJobSchema = z
+  .object({
+    jobId: z.string(),
+    status: z.enum([
+      'queued',
+      'dispatched',
+      'succeeded',
+      'failed',
+      'unavailable',
+      'unknown_delivery',
+    ]),
+    terminal: z.boolean(),
+    attemptCount: z.number().int().nonnegative().optional(),
+    queuePosition: z.number().int().nonnegative().optional(),
+    pollAfterSeconds: z.number().nonnegative().optional(),
+    createdAt: z.string().optional(),
+    completedAt: z.string().optional(),
+    result: proofResultSchema.optional(),
+    error: z
+      .object({
+        code: z.union([z.string(), z.number()]).optional(),
+        message: z.string().optional(),
+        data: z.unknown().optional(),
+        source: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+    resultUnavailableReason: z.string().optional(),
+  })
+  .passthrough()
+
+const STARKSCAN_PROVE_URL = 'https://api.starkscan.co/v1/SN_MAIN/prove'
+const MAX_PROOF_REQUEST_BYTES = 1024 * 1024
+const PROOF_RESULT_TTL_SECONDS = 60 * 60
 
 const SETTLEMENT_FACTORY_ABI = [
   {
@@ -95,7 +164,10 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
   await app.register(rateLimit, { global: true, max: 120, timeWindow: '1 minute' })
 
   const stateStore = overrides.stateStore ?? buildStateStore(config)
-  const flowStore = new FlowStore(config.FLOW_TOKEN_SECRET ?? randomBytes(32).toString('hex'), stateStore)
+  const capabilitySecret = config.FLOW_TOKEN_SECRET ?? randomBytes(32).toString('hex')
+  const flowStore = new FlowStore(capabilitySecret, stateStore)
+  const proofResultFallback = new Map<string, { value: string; expiresAt: number }>()
+  const proofPolls = new Map<string, Promise<ProofRelayJob>>()
   const dependencies =
     overrides.quoteDependencies ??
     (config.ETHEREUM_RPC_URL ? liveQuoteDependencies(config.ETHEREUM_RPC_URL) : undefined)
@@ -198,6 +270,105 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
     return reply.code(response.status).send(body)
   })
 
+  app.post(
+    '/v1/proofs',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!config.STARKSCAN_API_KEY) {
+        return reply.code(503).send({ error: 'Starkscan proof relay is not configured' })
+      }
+      const idempotencyKey = singleHeader(request.headers['idempotency-key'])
+      if (!proofIdempotencyKeySchema.safeParse(idempotencyKey).success) {
+        return reply.code(400).send({ error: 'A valid Idempotency-Key header is required' })
+      }
+      const parsed = proofRequestSchema.safeParse(request.body)
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() })
+      if (Buffer.byteLength(JSON.stringify(parsed.data)) > MAX_PROOF_REQUEST_BYTES) {
+        return reply.code(413).send({ error: 'Proof request exceeds Starkscan\'s 1 MiB limit' })
+      }
+
+      try {
+        const response = await fetchImpl(STARKSCAN_PROVE_URL, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-starkscan-api-key': config.STARKSCAN_API_KEY,
+            'idempotency-key': idempotencyKey!,
+          },
+          body: JSON.stringify(parsed.data),
+          signal: AbortSignal.timeout(30_000),
+        })
+        const body = await response.json().catch(() => undefined)
+        if (response.status === 404) {
+          return reply.code(503).send({
+            error: 'Starkscan STRK20 proof relay is not enabled yet; its documented dormant state returns 404',
+          })
+        }
+        if (!response.ok) return forwardStarkscanError(reply, response, body)
+        const job = proofJobSchema.safeParse(body)
+        if (!job.success) return reply.code(502).send({ error: 'Starkscan returned an invalid proof job' })
+        if (job.data.terminal) {
+          await persistProofJob(
+            job.data as ProofRelayJob,
+            stateStore,
+            proofResultFallback,
+          )
+        }
+        const submission: ProofRelaySubmission = {
+          ...(job.data as ProofRelayJob),
+          pollToken: proofPollToken(capabilitySecret, job.data.jobId),
+        }
+        return reply.code(response.status).send(submission)
+      } catch (error) {
+        return reply.code(502).send({ error: `Starkscan proof submission failed: ${safeError(error)}` })
+      }
+    },
+  )
+
+  app.get<{ Params: { jobId: string } }>(
+    '/v1/proofs/:jobId',
+    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!config.STARKSCAN_API_KEY) {
+        return reply.code(503).send({ error: 'Starkscan proof relay is not configured' })
+      }
+      const parsed = proofJobParam.safeParse(request.params)
+      const pollToken = singleHeader(request.headers['x-proof-token'])
+      if (
+        !parsed.success ||
+        !proofPollTokenSchema.safeParse(pollToken).success ||
+        !secureEqual(pollToken!, proofPollToken(capabilitySecret, parsed.data.jobId))
+      ) {
+        return reply.code(404).send({ error: 'Proof job not found' })
+      }
+
+      try {
+        const job = await getProofJob({
+          jobId: parsed.data.jobId,
+          apiKey: config.STARKSCAN_API_KEY,
+          fetchImpl,
+          stateStore,
+          fallback: proofResultFallback,
+          inFlight: proofPolls,
+        })
+        return reply.send(job)
+      } catch (error) {
+        if (error instanceof StarkscanHttpError) {
+          if (error.status === 404) {
+            return reply.code(503).send({
+              error: 'Starkscan STRK20 proof relay is not enabled yet; its documented dormant state returns 404',
+            })
+          }
+          return reply
+            .code(upstreamStatus(error.status))
+            .headers(error.retryAfter ? { 'retry-after': error.retryAfter } : {})
+            .send(error.body ?? { error: 'Starkscan proof polling failed' })
+        }
+        return reply.code(502).send({ error: `Starkscan proof polling failed: ${safeError(error)}` })
+      }
+    },
+  )
+
   // This endpoint deliberately does not accept a flow id and does not persist the request. The
   // backend sees the recipient transiently while sponsoring deployment, but cannot join it to a
   // stored entry record through this API.
@@ -274,12 +445,112 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
     },
   )
 
-  registerOpaqueProxy(app, '/proxy/prover', config.PROVER_URL, fetchImpl)
   registerOpaqueProxy(app, '/proxy/discovery', config.DISCOVERY_URL, fetchImpl)
   registerOpaqueProxy(app, '/proxy/paymaster', config.PAYMASTER_URL, fetchImpl)
   registerOpaqueProxy(app, '/proxy/starknet-rpc', config.STARKNET_RPC_URL, fetchImpl)
 
   return app
+}
+
+class StarkscanHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+    readonly retryAfter: string | null,
+  ) {
+    super(`Starkscan returned HTTP ${status}`)
+  }
+}
+
+async function getProofJob(args: {
+  jobId: string
+  apiKey: string
+  fetchImpl: typeof fetch
+  stateStore: StateStore
+  fallback: Map<string, { value: string; expiresAt: number }>
+  inFlight: Map<string, Promise<ProofRelayJob>>
+}): Promise<ProofRelayJob> {
+  const key = `qrt:proof:${args.jobId}`
+  const memory = args.fallback.get(key)
+  if (memory && memory.expiresAt > Date.now()) return JSON.parse(memory.value) as ProofRelayJob
+  if (memory) args.fallback.delete(key)
+  const cached = await args.stateStore.get(key)
+  if (cached) return JSON.parse(cached) as ProofRelayJob
+
+  const existing = args.inFlight.get(args.jobId)
+  if (existing) return existing
+  const poll = pollAndPersistProofJob(args, key).finally(() => args.inFlight.delete(args.jobId))
+  args.inFlight.set(args.jobId, poll)
+  return poll
+}
+
+async function pollAndPersistProofJob(
+  args: {
+    jobId: string
+    apiKey: string
+    fetchImpl: typeof fetch
+    stateStore: StateStore
+    fallback: Map<string, { value: string; expiresAt: number }>
+  },
+  cacheKey: string,
+): Promise<ProofRelayJob> {
+  const response = await args.fetchImpl(`${STARKSCAN_PROVE_URL}/${encodeURIComponent(args.jobId)}`, {
+    headers: { accept: 'application/json', 'x-starkscan-api-key': args.apiKey },
+    signal: AbortSignal.timeout(30_000),
+  })
+  const body = await response.json().catch(() => undefined)
+  if (!response.ok) throw new StarkscanHttpError(response.status, body, response.headers.get('retry-after'))
+  const parsed = proofJobSchema.safeParse(body)
+  if (!parsed.success) throw new Error('Starkscan returned an invalid proof job')
+  const job = parsed.data as ProofRelayJob
+  if (!job.terminal) return job
+
+  if (job.result === undefined && job.error === undefined) {
+    const raced = await args.stateStore.get(cacheKey)
+    if (raced) return JSON.parse(raced) as ProofRelayJob
+  }
+
+  const value = JSON.stringify(job)
+  await persistProofJob(job, args.stateStore, args.fallback, cacheKey, value)
+  return job
+}
+
+async function persistProofJob(
+  job: ProofRelayJob,
+  stateStore: StateStore,
+  fallback: Map<string, { value: string; expiresAt: number }>,
+  key = `qrt:proof:${job.jobId}`,
+  value = JSON.stringify(job),
+): Promise<void> {
+  fallback.set(key, {
+    value,
+    expiresAt: Date.now() + PROOF_RESULT_TTL_SECONDS * 1_000,
+  })
+  await stateStore.set(key, value, PROOF_RESULT_TTL_SECONDS)
+}
+
+function proofPollToken(secret: string, jobId: string): string {
+  return createHmac('sha256', secret).update(`proof:${jobId}`).digest('hex')
+}
+
+function secureEqual(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left)
+  const rightBytes = Buffer.from(right)
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes)
+}
+
+function singleHeader(value: string | string[] | undefined): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function forwardStarkscanError(reply: FastifyReply, response: Response, body: unknown) {
+  const retryAfter = response.headers.get('retry-after')
+  if (retryAfter) reply.header('retry-after', retryAfter)
+  return reply.code(upstreamStatus(response.status)).send(body ?? { error: 'Starkscan request failed' })
+}
+
+function upstreamStatus(status: number): number {
+  return status >= 400 && status <= 599 ? status : 502
 }
 
 function buildStateStore(config: ApiConfig): StateStore {

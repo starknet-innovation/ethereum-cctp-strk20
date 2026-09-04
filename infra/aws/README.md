@@ -18,7 +18,7 @@ The ECR repository uses immutable tags and scan-on-push. Untagged images expire 
 
 ## Secrets
 
-CloudFormation generates the flow-token and Valkey secrets. The runtime secret intentionally starts with blank RPC, prover, discovery, paymaster, contract-address, and relayer-key fields. Populate those fields out of band before treating `/v1/health/ready` as healthy. Never place secret values in CloudFormation parameters, shell output, Vercel variables, or source control.
+CloudFormation generates the flow-token and Valkey secrets. The runtime secret starts with blank RPC, discovery, paymaster, contract-address, and relayer-key fields; add the operator-issued `STARKSCAN_API_KEY` with `prove` scope out of band as well. ECS injects the JSON object as one opaque secret and the API parses only its allow-listed configuration fields, so new keys do not require rotating the secret or changing the task definition. The original dormant `PROVER_URL` bootstrap field remains only to avoid regenerating and wiping an established secret; the API ignores it. Populate the active fields before treating `/v1/health/ready` as healthy. Never place secret values in CloudFormation parameters, shell output, Vercel variables, or source control.
 
 ## Network
 
@@ -26,7 +26,7 @@ ECS Express Mode creates and manages the public HTTPS load balancer path. Tasks 
 
 ## Durable state
 
-ElastiCache Serverless runs Valkey with TLS, password RBAC, a 1 GB storage cap, and a 1,000 ECPU-per-second cap. Quotes expire after 60 seconds; flow records expire after eight days. The cache, RBAC resources, credentials, and their security groups are retained when an established stack is deleted, but are cleaned up if initial stack creation rolls back.
+ElastiCache Serverless runs Valkey with TLS, password RBAC, a 1 GB storage cap, and a 1,000 ECPU-per-second cap. Quotes expire after 60 seconds; flow records expire after eight days. Starkscan terminal proof responses are written here before being returned because the upstream result is delivered only once, then expire after one hour. The cache, RBAC resources, credentials, and their security groups are retained when an established stack is deleted, but are cleaned up if initial stack creation rolls back.
 
 ## Logs
 
