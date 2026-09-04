@@ -1,0 +1,376 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Mainnet POC API on ECS Express Mode with private Valkey state and managed secrets.
+
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@2
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Deployment
+        Parameters:
+          - DeployService
+          - ImageTag
+      - Label:
+          default: Project network
+        Parameters:
+          - VpcId
+          - VpcCidr
+          - SubnetA
+          - SubnetB
+          - SubnetC
+      - Label:
+          default: Pre-created service roles
+        Parameters:
+          - InfrastructureRoleArn
+          - ExecutionRoleArn
+
+Parameters:
+  DeployService:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Create the ECS Express service after the first immutable image has been pushed.
+  ImageTag:
+    Type: String
+    Default: bootstrap
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-0b229ad67389eacf0
+  VpcCidr:
+    Type: String
+    Default: 172.31.0.0/16
+    AllowedPattern: '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+  SubnetA:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-09e12bbbec334909c
+  SubnetB:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-01bf22e5dc79b5ede
+  SubnetC:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-086015042670e7085
+  InfrastructureRoleArn:
+    Type: String
+    Default: arn:aws:iam::905846953990:role/ethereum-cctp-strk20-ecs-infra
+  ExecutionRoleArn:
+    Type: String
+    Default: arn:aws:iam::905846953990:role/ethereum-cctp-strk20-ecs-execution
+
+Conditions:
+  DeployApi: !Equals [!Ref DeployService, 'true']
+
+Resources:
+  ApiRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Metadata:
+      ContextRef: infra/aws/README.md#api-container-repository
+    Properties:
+      RepositoryName: ethereum-cctp-strk20-api
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: >-
+          {"rules":[{"rulePriority":1,"description":"Remove untagged images after seven days","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},"action":{"type":"expire"}},{"rulePriority":2,"description":"Keep the ten newest release images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}
+      Tags:
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
+  CacheCredentials:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Metadata:
+      ContextRef: infra/aws/README.md#secrets
+    Properties:
+      Name: ethereum-cctp-strk20/cache-credentials
+      Description: Generated Valkey credentials for the project API.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"qrt-app"}'
+        GenerateStringKey: password
+        PasswordLength: 40
+        ExcludeCharacters: ',"/@'
+      Tags:
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
+  RuntimeSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Metadata:
+      ContextRef: infra/aws/README.md#secrets
+    Properties:
+      Name: ethereum-cctp-strk20/runtime
+      Description: Mainnet runtime configuration; populate placeholders before enabling live flows.
+      GenerateSecretString:
+        SecretStringTemplate: >-
+          {"ETHEREUM_RPC_URL":"","STARKNET_RPC_URL":"","PROVER_URL":"","DISCOVERY_URL":"","PAYMASTER_URL":"","ETHEREUM_ENTRY_ROUTER":"","ETHEREUM_EXIT_SETTLEMENT_FACTORY":"","STARKNET_CCTP_EXIT_ANONYMIZER":"","ETHEREUM_RELAYER_PRIVATE_KEY":""}
+        GenerateStringKey: FLOW_TOKEN_SECRET
+        PasswordLength: 64
+        ExcludePunctuation: true
+      Tags:
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
+  TaskAccessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Metadata:
+      ContextRef: infra/aws/README.md#network
+    Properties:
+      GroupDescription: Project API egress to HTTPS services, DNS, and Valkey.
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - Description: HTTPS APIs and ECR image pulls
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - Description: VPC DNS over UDP
+          IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Ref VpcCidr
+        - Description: VPC DNS over TCP
+          IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: !Ref VpcCidr
+        - Description: Valkey data port within the VPC
+          IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6380
+          CidrIp: !Ref VpcCidr
+      Tags:
+        - Key: Name
+          Value: ethereum-cctp-strk20-api
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
+  CacheSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Metadata:
+      ContextRef: infra/aws/README.md#network
+    Properties:
+      GroupDescription: Accept Valkey TLS traffic only from the project API tasks.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: Valkey data endpoint
+          IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref TaskAccessSecurityGroup
+        - Description: Valkey auxiliary endpoint
+          IpProtocol: tcp
+          FromPort: 6380
+          ToPort: 6380
+          SourceSecurityGroupId: !Ref TaskAccessSecurityGroup
+      Tags:
+        - Key: Name
+          Value: ethereum-cctp-strk20-state
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
+  CacheUser:
+    Type: AWS::ElastiCache::User
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Metadata:
+      ContextRef: infra/aws/README.md#durable-state
+    Properties:
+      UserId: ethereum-cctp-strk20-app
+      UserName: qrt-app
+      Engine: valkey
+      AccessString: 'on ~qrt:* +@all -flushall -flushdb -config -acl -shutdown -module'
+      AuthenticationMode:
+        Type: password
+        Passwords:
+          - '{{resolve:secretsmanager:ethereum-cctp-strk20/cache-credentials:SecretString:password}}'
+      Tags:
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
+  CacheUserGroup:
+    Type: AWS::ElastiCache::UserGroup
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Metadata:
+      ContextRef: infra/aws/README.md#durable-state
+    Properties:
+      UserGroupId: ethereum-cctp-strk20-users
+      Engine: valkey
+      UserIds:
+        - !Ref CacheUser
+      Tags:
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
+  StateCache:
+    Type: AWS::ElastiCache::ServerlessCache
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Metadata:
+      ContextRef: infra/aws/README.md#durable-state
+    Properties:
+      ServerlessCacheName: ethereum-cctp-strk20-state
+      Description: Durable short-lived quote and flow state for the mainnet POC.
+      Engine: valkey
+      CacheUsageLimits:
+        DataStorage:
+          Maximum: 1
+          Unit: GB
+        ECPUPerSecond:
+          Maximum: 1000
+      SecurityGroupIds:
+        - !Ref CacheSecurityGroup
+      SubnetIds:
+        - !Ref SubnetA
+        - !Ref SubnetB
+        - !Ref SubnetC
+      UserGroupId: !Ref CacheUserGroup
+      SnapshotRetentionLimit: 7
+      DailySnapshotTime: '03:00'
+      Tags:
+        - Key: managed_by
+          Value: aws-skills
+        - Key: skill
+          Value: elasticache
+        - Key: skill_version
+          Value: 1.0.0
+        - Key: created_by
+          Value: elasticache-skill
+        - Key: generation_model
+          Value: gpt-5.6-sol
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Metadata:
+      ContextRef: infra/aws/README.md#logs
+    Properties:
+      LogGroupName: /ecs/ethereum-cctp-strk20-api
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
+  ApiService:
+    Type: AWS::ECS::ExpressGatewayService
+    Condition: DeployApi
+    Metadata:
+      ContextRef: infra/aws/README.md#api-service
+    Properties:
+      ServiceName: ethereum-cctp-strk20-api
+      Cluster: ethereum-cctp-strk20
+      InfrastructureRoleArn: !Ref InfrastructureRoleArn
+      ExecutionRoleArn: !Ref ExecutionRoleArn
+      Cpu: '256'
+      Memory: '512'
+      HealthCheckPath: /v1/health/live
+      PrimaryContainer:
+        Image: !Join [':', [!GetAtt ApiRepository.RepositoryUri, !Ref ImageTag]]
+        ContainerPort: 8787
+        AwsLogsConfiguration:
+          LogGroup: !Ref ApiLogGroup
+          LogStreamPrefix: api
+        Environment:
+          - Name: HOST
+            Value: 0.0.0.0
+          - Name: PORT
+            Value: '8787'
+          - Name: CORS_ORIGIN
+            Value: https://ethereum-cctp-strk20.vercel.app
+          - Name: ESTIMATED_STARKNET_FEES_USDC
+            Value: '2'
+          - Name: STATE_CACHE_ENDPOINT
+            Value: !GetAtt StateCache.Endpoint.Address
+          - Name: STATE_CACHE_PORT
+            Value: !GetAtt StateCache.Endpoint.Port
+          - Name: STATE_CACHE_USERNAME
+            Value: qrt-app
+        Secrets:
+          - Name: STATE_CACHE_PASSWORD
+            ValueFrom: !Sub '${CacheCredentials}:password::'
+          - Name: ETHEREUM_RPC_URL
+            ValueFrom: !Sub '${RuntimeSecret}:ETHEREUM_RPC_URL::'
+          - Name: STARKNET_RPC_URL
+            ValueFrom: !Sub '${RuntimeSecret}:STARKNET_RPC_URL::'
+          - Name: PROVER_URL
+            ValueFrom: !Sub '${RuntimeSecret}:PROVER_URL::'
+          - Name: DISCOVERY_URL
+            ValueFrom: !Sub '${RuntimeSecret}:DISCOVERY_URL::'
+          - Name: PAYMASTER_URL
+            ValueFrom: !Sub '${RuntimeSecret}:PAYMASTER_URL::'
+          - Name: ETHEREUM_ENTRY_ROUTER
+            ValueFrom: !Sub '${RuntimeSecret}:ETHEREUM_ENTRY_ROUTER::'
+          - Name: ETHEREUM_EXIT_SETTLEMENT_FACTORY
+            ValueFrom: !Sub '${RuntimeSecret}:ETHEREUM_EXIT_SETTLEMENT_FACTORY::'
+          - Name: STARKNET_CCTP_EXIT_ANONYMIZER
+            ValueFrom: !Sub '${RuntimeSecret}:STARKNET_CCTP_EXIT_ANONYMIZER::'
+          - Name: ETHEREUM_RELAYER_PRIVATE_KEY
+            ValueFrom: !Sub '${RuntimeSecret}:ETHEREUM_RELAYER_PRIVATE_KEY::'
+          - Name: FLOW_TOKEN_SECRET
+            ValueFrom: !Sub '${RuntimeSecret}:FLOW_TOKEN_SECRET::'
+      NetworkConfiguration:
+        Subnets:
+          - !Ref SubnetA
+          - !Ref SubnetB
+          - !Ref SubnetC
+        SecurityGroups:
+          - !Ref TaskAccessSecurityGroup
+      ScalingTarget:
+        MinTaskCount: 1
+        MaxTaskCount: 1
+        AutoScalingMetric: AVERAGE_CPU
+        AutoScalingTargetValue: 70
+      Tags:
+        - Key: Project
+          Value: ethereum-cctp-strk20
+        - Key: Environment
+          Value: mainnet-poc
+
+Outputs:
+  RepositoryUri:
+    Description: Immutable API image repository.
+    Value: !GetAtt ApiRepository.RepositoryUri
+  RuntimeSecretArn:
+    Description: Populate this secret before enabling mainnet flows; never expose it to the browser.
+    Value: !Ref RuntimeSecret
+  CacheEndpoint:
+    Description: Private Valkey endpoint.
+    Value: !GetAtt StateCache.Endpoint.Address
+  ApiEndpoint:
+    Condition: DeployApi
+    Description: Managed HTTPS endpoint for Vercel.
+    Value: !GetAtt ApiService.Endpoint

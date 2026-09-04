@@ -1,4 +1,5 @@
 import cors from '@fastify/cors'
+import rateLimit from '@fastify/rate-limit'
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify'
 import {
   CHAIN,
@@ -22,6 +23,7 @@ import type { ApiConfig } from './config.js'
 import { readiness } from './config.js'
 import { FlowStore } from './flowStore.js'
 import { liveQuoteDependencies, QuoteService, type QuoteDependencies } from './quote.js'
+import { MemoryStateStore, ValkeyStateStore, type StateStore } from './stateStore.js'
 
 const hashParam = z.object({ txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/) })
 const settlementRequest = z
@@ -80,23 +82,36 @@ const EXIT_SETTLEMENT_ABI = [
 export interface ServerOverrides {
   quoteDependencies?: QuoteDependencies
   fetchImpl?: typeof fetch
+  stateStore?: StateStore
 }
 
 export async function buildServer(config: ApiConfig, overrides: ServerOverrides = {}) {
-  const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 })
+  const app = Fastify({
+    logger: process.env.NODE_ENV === 'production' ? { level: 'info' } : false,
+    bodyLimit: 2 * 1024 * 1024,
+    trustProxy: (_address, hop) => hop <= 1,
+  })
   await app.register(cors, { origin: config.CORS_ORIGIN, methods: ['GET', 'POST', 'PATCH'] })
+  await app.register(rateLimit, { global: true, max: 120, timeWindow: '1 minute' })
 
-  const flowStore = new FlowStore(config.FLOW_TOKEN_SECRET ?? randomBytes(32).toString('hex'))
+  const stateStore = overrides.stateStore ?? buildStateStore(config)
+  const flowStore = new FlowStore(config.FLOW_TOKEN_SECRET ?? randomBytes(32).toString('hex'), stateStore)
   const dependencies =
     overrides.quoteDependencies ??
     (config.ETHEREUM_RPC_URL ? liveQuoteDependencies(config.ETHEREUM_RPC_URL) : undefined)
   const quoteService = dependencies
-    ? new QuoteService(dependencies, BigInt(Math.ceil(config.ESTIMATED_STARKNET_FEES_USDC * 1e6)))
+    ? new QuoteService(
+        dependencies,
+        BigInt(Math.ceil(config.ESTIMATED_STARKNET_FEES_USDC * 1e6)),
+        stateStore,
+      )
     : undefined
   const fetchImpl = overrides.fetchImpl ?? fetch
 
-  app.get('/v1/health/live', async () => ({ status: 'ok', environment: 'mainnet' }))
-  app.get('/v1/health/ready', async (_, reply) => {
+  app.addHook('onClose', async () => stateStore.close())
+
+  app.get('/v1/health/live', { config: { rateLimit: false } }, async () => ({ status: 'ok', environment: 'mainnet' }))
+  app.get('/v1/health/ready', { config: { rateLimit: false } }, async (_, reply) => {
     const missing = readiness(config)
     return reply.code(missing.length === 0 ? 200 : 503).send({ ready: missing.length === 0, missing })
   })
@@ -144,14 +159,14 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
     if (!quoteService) return reply.code(503).send({ error: 'Quote service is not configured' })
     const parsed = createFlowSchema.safeParse(request.body)
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() })
-    const quote = quoteService.get(parsed.data.quoteId)
+    const quote = await quoteService.get(parsed.data.quoteId)
     if (!quote) return reply.code(409).send({ error: 'Quote expired; request a new quote' })
-    return reply.code(201).send(flowStore.create({ quote, ...parsed.data }))
+    return reply.code(201).send(await flowStore.create({ quote, ...parsed.data }))
   })
 
   app.get<{ Params: { id: string } }>('/v1/flows/:id', async (request, reply) => {
     const token = flowToken(request.headers['x-flow-token'])
-    const flow = token ? flowStore.read(request.params.id, token) : undefined
+    const flow = token ? await flowStore.read(request.params.id, token) : undefined
     return flow ? flow : reply.code(404).send({ error: 'Flow not found' })
   })
 
@@ -160,7 +175,7 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
     const parsed = flowUpdateSchema.safeParse(request.body)
     if (!token || !parsed.success) return reply.code(400).send({ error: 'Invalid update' })
     try {
-      const flow = flowStore.update(request.params.id, token, parsed.data)
+      const flow = await flowStore.update(request.params.id, token, parsed.data)
       return flow ? flow : reply.code(404).send({ error: 'Flow not found' })
     } catch (error) {
       return reply.code(409).send({ error: safeError(error) })
@@ -181,7 +196,7 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
   // This endpoint deliberately does not accept a flow id and does not persist the request. The
   // backend sees the recipient transiently while sponsoring deployment, but cannot join it to a
   // stored entry record through this API.
-  app.post('/v1/settlements', async (request, reply) => {
+  app.post('/v1/settlements', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => {
     const parsed = settlementRequest.safeParse(request.body)
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() })
     if (
@@ -227,7 +242,10 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
 
   // Settlement is permissionless. Relaying it avoids a third wallet prompt and is intentionally
   // stateless: the request contains only the already-public settlement address.
-  app.post<{ Params: { address: string } }>('/v1/settlements/:address/settle', async (request, reply) => {
+  app.post<{ Params: { address: string } }>(
+    '/v1/settlements/:address/settle',
+    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (request, reply) => {
     const parsed = settlementParam.safeParse(request.params)
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid settlement address' })
     if (!config.ETHEREUM_RPC_URL || !config.ETHEREUM_RELAYER_PRIVATE_KEY) {
@@ -248,7 +266,8 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
     } catch (error) {
       return reply.code(502).send({ error: safeError(error) })
     }
-  })
+    },
+  )
 
   registerOpaqueProxy(app, '/proxy/prover', config.PROVER_URL, fetchImpl)
   registerOpaqueProxy(app, '/proxy/discovery', config.DISCOVERY_URL, fetchImpl)
@@ -256,6 +275,18 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
   registerOpaqueProxy(app, '/proxy/starknet-rpc', config.STARKNET_RPC_URL, fetchImpl)
 
   return app
+}
+
+function buildStateStore(config: ApiConfig): StateStore {
+  if (!config.STATE_CACHE_ENDPOINT || !config.STATE_CACHE_USERNAME || !config.STATE_CACHE_PASSWORD) {
+    return new MemoryStateStore()
+  }
+  return new ValkeyStateStore({
+    host: config.STATE_CACHE_ENDPOINT,
+    port: config.STATE_CACHE_PORT,
+    username: config.STATE_CACHE_USERNAME,
+    password: config.STATE_CACHE_PASSWORD,
+  })
 }
 
 function registerOpaqueProxy(

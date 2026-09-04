@@ -17,6 +17,7 @@ const config: ApiConfig = {
   STARKNET_CCTP_EXIT_ANONYMIZER: '0x123',
   ETHEREUM_RELAYER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
   FLOW_TOKEN_SECRET: 'x'.repeat(32),
+  STATE_CACHE_PORT: 6379,
   ESTIMATED_STARKNET_FEES_USDC: 2,
 }
 
@@ -73,6 +74,7 @@ describe('api', () => {
       HOST: '127.0.0.1',
       PORT: 8787,
       CORS_ORIGIN: 'http://localhost:5173',
+      STATE_CACHE_PORT: 6379,
       ESTIMATED_STARKNET_FEES_USDC: 2,
     })
     const response = await app.inject({ method: 'GET', url: '/v1/health/ready' })

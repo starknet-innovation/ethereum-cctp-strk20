@@ -15,6 +15,7 @@ import {
 } from 'viem'
 import { mainnet } from 'viem/chains'
 import { randomUUID } from 'node:crypto'
+import type { StateStore } from './stateStore.js'
 
 const QUOTER_ABI = [
   {
@@ -44,11 +45,10 @@ export interface QuoteDependencies {
 }
 
 export class QuoteService {
-  readonly quotes = new Map<string, RouteQuote>()
-
   constructor(
     private readonly dependencies: QuoteDependencies,
     private readonly estimatedStarknetFeesBase: bigint,
+    private readonly state: StateStore,
   ) {}
 
   async create(request: QuoteRequest): Promise<RouteQuote> {
@@ -102,14 +102,19 @@ export class QuoteService {
         'The five-minute-or-longer delay reduces immediacy but does not prevent amount or timing correlation.',
       ],
     }
-    this.quotes.set(quote.quoteId, quote)
+    await this.state.set(this.key(quote.quoteId), JSON.stringify(quote), 60)
     return quote
   }
 
-  get(id: string): RouteQuote | undefined {
-    const quote = this.quotes.get(id)
+  async get(id: string): Promise<RouteQuote | undefined> {
+    const serialized = await this.state.get(this.key(id))
+    const quote = serialized ? (JSON.parse(serialized) as RouteQuote) : undefined
     if (!quote || Date.parse(quote.expiresAt) <= Date.now()) return undefined
     return quote
+  }
+
+  private key(id: string): string {
+    return `qrt:quote:${id}`
   }
 }
 

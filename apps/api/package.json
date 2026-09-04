@@ -12,8 +12,10 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
+    "@fastify/rate-limit": "^11.2.0",
     "@privacy-round-trip/shared": "0.1.0",
     "fastify": "^5.6.0",
+    "iovalkey": "^0.4.0",
     "viem": "^2.37.3",
     "zod": "^3.25.76"
   },
