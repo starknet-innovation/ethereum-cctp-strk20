@@ -8,7 +8,9 @@ import type {
   TokenSymbol,
 } from '@privacy-round-trip/shared'
 
-const API = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ?? 'http://localhost:8787'
+const API =
+  (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ??
+  (import.meta.env.DEV ? 'http://localhost:8787' : '')
 
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
