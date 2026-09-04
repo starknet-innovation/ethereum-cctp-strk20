@@ -1,0 +1,26 @@
+{
+  "name": "ethereum-privacy-round-trip-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "npm run build -w @privacy-round-trip/shared && npm run build -w @privacy-round-trip/api && npm run build -w @privacy-round-trip/web",
+    "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @privacy-round-trip/api\" \"npm run dev -w @privacy-round-trip/web\"",
+    "test": "npm run build -w @privacy-round-trip/shared && npm run test --workspaces --if-present",
+    "typecheck": "npm run build -w @privacy-round-trip/shared && npm run typecheck -w @privacy-round-trip/api && npm run typecheck -w @privacy-round-trip/web",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
