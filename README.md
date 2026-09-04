@@ -61,4 +61,18 @@ forge test --root contracts/evm
 scarb build --manifest-path contracts/starknet/Scarb.toml
 ```
 
+### Mainnet end-to-end suite
+
+The unit tests above use mocks. The `e2e/` workspace and `contracts/evm/test/fork/` run against
+mainnet itself: read-only dependency checks, the API against live Uniswap and Circle, and the whole
+Ethereum leg on an anvil fork through the real API relayer routes and browser wallet code.
+
+```bash
+cp e2e/.env.example e2e/.env   # at least ETHEREUM_RPC_URL; STARKNET_RPC_URL for Starknet checks
+npm run test:fork              # Foundry contracts on a mainnet fork (skips without ETHEREUM_RPC_URL)
+npm run test:e2e               # live + anvil fork suites; the real-funds canary stays skipped unless armed
+```
+
+See `e2e/README.md` for the layers, the deployment-verification mode, and the gated canary.
+
 Do not deploy or run a real-funds flow until the checklist in `docs/ARCHITECTURE.md` is complete.

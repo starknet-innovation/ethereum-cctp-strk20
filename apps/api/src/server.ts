@@ -13,6 +13,7 @@ import {
   createPublicClient,
   createWalletClient,
   http,
+  type Account,
   type Address,
   type Hex,
 } from 'viem'
@@ -83,6 +84,12 @@ export interface ServerOverrides {
   quoteDependencies?: QuoteDependencies
   fetchImpl?: typeof fetch
   stateStore?: StateStore
+  /**
+   * Relayer identity used for settlement transactions. Production derives it from
+   * ETHEREUM_RELAYER_PRIVATE_KEY; forked end-to-end tests inject a node-managed JSON-RPC account
+   * so no key material exists in the test process.
+   */
+  relayerAccount?: Account
 }
 
 export async function buildServer(config: ApiConfig, overrides: ServerOverrides = {}) {
@@ -107,6 +114,11 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
       )
     : undefined
   const fetchImpl = overrides.fetchImpl ?? fetch
+  const relayer =
+    overrides.relayerAccount ??
+    (config.ETHEREUM_RELAYER_PRIVATE_KEY
+      ? privateKeyToAccount(config.ETHEREUM_RELAYER_PRIVATE_KEY as Hex)
+      : undefined)
 
   app.addHook('onClose', async () => stateStore.close())
 
@@ -204,11 +216,7 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
   app.post('/v1/settlements', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => {
     const parsed = settlementRequest.safeParse(request.body)
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() })
-    if (
-      !config.ETHEREUM_RPC_URL ||
-      !config.ETHEREUM_RELAYER_PRIVATE_KEY ||
-      !config.ETHEREUM_EXIT_SETTLEMENT_FACTORY
-    ) {
+    if (!config.ETHEREUM_RPC_URL || !relayer || !config.ETHEREUM_EXIT_SETTLEMENT_FACTORY) {
       return reply.code(503).send({ error: 'Ethereum settlement relayer is not configured' })
     }
     const outputAsset = { ETH: 0, USDC: 1, WBTC: 2 }[parsed.data.outputToken]
@@ -222,7 +230,7 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
     ] as const
     try {
       const publicClient = createPublicClient({ chain: mainnet, transport: http(config.ETHEREUM_RPC_URL) })
-      const account = privateKeyToAccount(config.ETHEREUM_RELAYER_PRIVATE_KEY as Hex)
+      const account = relayer
       const wallet = createWalletClient({ account, chain: mainnet, transport: http(config.ETHEREUM_RPC_URL) })
       const factory = config.ETHEREUM_EXIT_SETTLEMENT_FACTORY as Address
       const settlement = await publicClient.readContract({
@@ -253,12 +261,12 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
     async (request, reply) => {
     const parsed = settlementParam.safeParse(request.params)
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid settlement address' })
-    if (!config.ETHEREUM_RPC_URL || !config.ETHEREUM_RELAYER_PRIVATE_KEY) {
+    if (!config.ETHEREUM_RPC_URL || !relayer) {
       return reply.code(503).send({ error: 'Ethereum settlement relayer is not configured' })
     }
     try {
       const publicClient = createPublicClient({ chain: mainnet, transport: http(config.ETHEREUM_RPC_URL) })
-      const account = privateKeyToAccount(config.ETHEREUM_RELAYER_PRIVATE_KEY as Hex)
+      const account = relayer
       const wallet = createWalletClient({ account, chain: mainnet, transport: http(config.ETHEREUM_RPC_URL) })
       const { request: transaction } = await publicClient.simulateContract({
         account,

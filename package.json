@@ -5,7 +5,8 @@
   "type": "module",
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "e2e"
   ],
   "engines": {
     "node": "24.x"
@@ -14,7 +15,9 @@
     "build": "npm run build -w @privacy-round-trip/shared && npm run build -w @privacy-round-trip/api && npm run build -w @privacy-round-trip/web",
     "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @privacy-round-trip/api\" \"npm run dev -w @privacy-round-trip/web\"",
     "test": "npm run build -w @privacy-round-trip/shared && npm run test --workspaces --if-present",
-    "typecheck": "npm run build -w @privacy-round-trip/shared && npm run typecheck -w @privacy-round-trip/api && npm run typecheck -w @privacy-round-trip/web",
+    "test:e2e": "npm run build -w @privacy-round-trip/shared && npm run test:e2e -w @privacy-round-trip/e2e",
+    "test:fork": "forge test --root contracts/evm --match-path 'test/fork/*' -vv",
+    "typecheck": "npm run build -w @privacy-round-trip/shared && npm run typecheck -w @privacy-round-trip/api && npm run typecheck -w @privacy-round-trip/web && npm run typecheck -w @privacy-round-trip/e2e",
     "check": "npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {

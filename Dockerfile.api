@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
+COPY e2e/package.json e2e/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY vendor vendor
 RUN npm ci
@@ -19,6 +20,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
+COPY e2e/package.json e2e/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY vendor vendor
 RUN npm ci --omit=dev --workspace @privacy-round-trip/api --workspace @privacy-round-trip/shared

@@ -1,0 +1,67 @@
+name: Mainnet end-to-end
+
+# Manual only. These suites talk to live Ethereum and Starknet mainnet RPCs, Circle's Iris API and
+# an anvil fork of mainnet; they are deliberately kept out of the deploy pipeline. The real-funds
+# canary is never run here: it requires an operator-held key and is refused without it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      fork_block:
+        description: Optional pinned Ethereum block for the anvil and Foundry fork suites
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ethereum-cctp-strk20-e2e-mainnet
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: Fork and live mainnet suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ETHEREUM_RPC_URL: ${{ secrets.E2E_ETHEREUM_RPC_URL }}
+      STARKNET_RPC_URL: ${{ secrets.E2E_STARKNET_RPC_URL }}
+      ETHEREUM_FORK_BLOCK: ${{ inputs.fork_block }}
+      ETHEREUM_ENTRY_ROUTER: ${{ vars.ETHEREUM_ENTRY_ROUTER }}
+      ETHEREUM_EXIT_SETTLEMENT_FACTORY: ${{ vars.ETHEREUM_EXIT_SETTLEMENT_FACTORY }}
+      STARKNET_CCTP_EXIT_ANONYMIZER: ${{ vars.STARKNET_CCTP_EXIT_ANONYMIZER }}
+      E2E_API_URL: ${{ vars.E2E_API_URL }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require RPC configuration
+        run: |
+          if [ -z "$ETHEREUM_RPC_URL" ]; then
+            echo "Set the E2E_ETHEREUM_RPC_URL repository secret before running this workflow." >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.8.0
+          package-manager-cache: false
+
+      - name: Set up Foundry
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Foundry fork suite
+        run: npm run test:fork
+
+      - name: Live and anvil fork suites
+        run: npm run test:e2e
