@@ -4,6 +4,14 @@ This stack is scoped to account `905846953990`, region `eu-west-3`, and the main
 
 The `infra/aws/iam` directory records the deployed role trusts and policies. The local profile assumes `ethereum-cctp-strk20-deployer` from the non-root `default` profile; it has no long-lived credentials of its own.
 
+## Continuous deployment
+
+The Vercel GitHub integration builds previews for branches and deploys `main` to production using the checked-in `vercel.json`. `VITE_API_URL` remains a Vercel environment variable and is not stored in the repository.
+
+The `Deploy backend` GitHub Actions workflow runs when backend, shared-package, container, or AWS infrastructure files reach `main`. It tests the workspace, publishes a `linux/amd64` image under the immutable Git commit SHA, creates a CloudFormation change set, refuses deletions or resource replacements, deploys the safe change set, and probes `/v1/health/live`.
+
+GitHub exchanges its OIDC token for short-lived credentials on `ethereum-cctp-strk20-github-deploy`; no AWS access keys are stored in GitHub. The role trust is bound to this repository's immutable organization and repository IDs and to `refs/heads/main`. Infrastructure bootstrap and secret population remain manual operations.
+
 ## API container repository
 
 The ECR repository uses immutable tags and scan-on-push. Untagged images expire after seven days; the ten newest tagged images are retained. The repository itself is retained if an established stack is deleted, but is cleaned up if initial stack creation rolls back.
@@ -35,3 +43,5 @@ The stack creates a dedicated ECS cluster, then ECS Express Mode runs exactly on
 3. Update with `DeployService=true` and the immutable image tag.
 
 Use a CloudFormation change set for both phases and inspect it before execution.
+
+After bootstrap, normal backend deployments are performed automatically by `.github/workflows/deploy-backend.yml`.

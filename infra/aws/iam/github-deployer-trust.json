@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TrustOnlyThisRepositoryMainBranch",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::905846953990:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:starknet-innovation@258895906/ethereum-cctp-strk20@1357059336:ref:refs/heads/main"
+        }
+      }
+    }
+  ]
+}
