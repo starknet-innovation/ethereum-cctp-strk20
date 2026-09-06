@@ -171,7 +171,9 @@ Do not open the route button until all of these are complete:
    dormant state returns 404 to every caller. Keep that key and the discovery, RPC, and paymaster
    credentials behind the API.
 6. Add edge rate limits, per-day gas budgets, alarms, and an emergency relayer shutdown.
-7. Run a forked end-to-end test, then a deliberately tiny mainnet canary for every token pair.
+7. Run the forked end-to-end suites (`npm run test:fork`, `npm run test:e2e`), verify the
+   deployment with the address-configured checks in `e2e/`, then run the gated real-funds canary
+   (`e2e/README.md`) for every token pair.
 8. Add durable state and an audited recovery design before calling the product resumable.
 
 The `/v1/health/ready` endpoint fails closed and the UI displays the exact missing deployment
