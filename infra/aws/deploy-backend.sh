@@ -9,6 +9,11 @@ set -Eeuo pipefail
 template_file="${TEMPLATE_FILE:-infra/aws/backend.yaml}"
 change_set_name="${CHANGE_SET_NAME:-deploy-${IMAGE_TAG:0:12}}"
 
+if grep -nE '^[[:space:]]+Value:[[:space:]]+0x[[:xdigit:]]+[[:space:]]*$' "$template_file"; then
+  echo "Hexadecimal environment values must be quoted so YAML preserves them as strings." >&2
+  exit 1
+fi
+
 aws cloudformation validate-template \
   --region "$AWS_REGION" \
   --template-body "file://$template_file" >/dev/null
