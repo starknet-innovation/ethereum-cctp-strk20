@@ -49,7 +49,8 @@ contract MainnetRoundTripForkTest {
     uint32 constant FAST_FINALITY = 1_000;
     uint256 constant MESSAGE_LENGTH_WITHOUT_HOOK = 376;
 
-    // Derived test fixtures, not real accounts. A felt must stay below 2^251.
+    // Derived test fixtures, not real accounts. A felt must stay below 2^251. A derived address
+    // can still be dusted on mainnet, so every recipient balance below is asserted as a delta.
     uint256 constant STARKNET_RECIPIENT = uint256(keccak256("ephemeral starknet account")) >> 8;
     address payable immutable recipient =
         payable(address(uint160(uint256(keccak256("fork recipient")))));
@@ -279,12 +280,13 @@ contract MainnetRoundTripForkTest {
             keccak256("usdc-out"), ExitSettlement.OutputAsset.USDC, amount * 99 / 100, 500
         );
         usdc.transfer(address(settlement), amount);
+        uint256 before = usdc.balanceOf(recipient);
 
         vm.prank(relayer);
         uint256 output = settlement.settle();
 
         require(output == amount, "USDC output must be the full balance");
-        require(usdc.balanceOf(recipient) == amount, "recipient did not receive USDC");
+        require(usdc.balanceOf(recipient) - before == amount, "recipient did not receive USDC");
         require(settlement.settled(), "not marked settled");
     }
 
@@ -313,10 +315,11 @@ contract MainnetRoundTripForkTest {
         settlement.recoverAsUsdc();
 
         vm.warp(recoverAfter);
+        uint256 before = usdc.balanceOf(recipient);
         vm.prank(relayer);
         settlement.recoverAsUsdc();
 
-        require(usdc.balanceOf(recipient) == amount, "recipient did not recover USDC");
+        require(usdc.balanceOf(recipient) - before == amount, "recipient did not recover USDC");
         require(usdc.balanceOf(address(settlement)) == 0, "USDC left in settlement");
         require(settlement.settled(), "not marked settled");
     }

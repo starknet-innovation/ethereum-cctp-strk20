@@ -21,6 +21,7 @@ describe.skipIf(!env.ETHEREUM_RPC_URL)('QuoteService against live Uniswap V3 poo
     const amount = AMOUNTS[inputToken]
     const started = Date.now()
     const quote: RouteQuote = await service.create({ inputToken, outputToken, amount, slippageBps: 100 })
+    const finished = Date.now()
 
     expect(BigInt(quote.inputAmountBase)).toBe(parseUnits(amount, TOKENS[inputToken].decimals))
     const estimatedBridge = BigInt(quote.estimatedBridgeAmountBase)
@@ -49,9 +50,12 @@ describe.skipIf(!env.ETHEREUM_RPC_URL)('QuoteService against live Uniswap V3 poo
       expect(UNISWAP_FEE_TIERS).toContain(quote.exitPoolFee)
     }
 
-    const expiresIn = Date.parse(quote.expiresAt) - started
-    expect(expiresIn).toBeGreaterThan(0)
-    expect(expiresIn).toBeLessThanOrEqual(61_000)
+    // The service stamps expiresAt 60s ahead of its own clock reading inside create(), so the
+    // deadline must land 60s after some instant within this call. Bounding it against both ends
+    // pins the TTL exactly without depending on how slow the live Uniswap and Circle calls were.
+    const expiresAt = Date.parse(quote.expiresAt)
+    expect(expiresAt).toBeGreaterThanOrEqual(started + 60_000)
+    expect(expiresAt).toBeLessThanOrEqual(finished + 60_000)
     expect(quote.warnings.length).toBeGreaterThan(0)
     expect(await service.get(quote.quoteId)).toEqual(quote)
   })

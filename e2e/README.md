@@ -42,9 +42,14 @@ sentinel in `src/support/env.ts`. It also needs `E2E_API_URL` (a **ready** API),
 wallet. It refuses to start when the quoted bridge amount exceeds `E2E_MAX_BRIDGE_USDC`.
 
 Expect the run to last at least `E2E_DELAY_MINUTES` plus two CCTP attestations and two proofs.
-Keep the process alive: like the browser, the ephemeral Starknet key lives only in memory, and a
-failure log prints the account address so operators can assess stranded funds. Run one pair at a
-time and repeat for each pair listed in the architecture gate.
+Run one pair at a time and repeat for each pair listed in the architecture gate.
+
+**A failure after the inbound mint loses the funds.** The ephemeral Stark signing and viewing keys
+exist only in the test process, so when the test fails they are destroyed and whatever has reached
+the ephemeral account or the pool cannot be recovered — the failure log can name the account but
+nothing can control it. This is worse than the browser, which keeps the failed tab and its secrets
+alive. Arm the canary only for an amount you are prepared to lose outright. A real recovery path
+means persisting live key material and needs a security-reviewed design first.
 
 ## CI
 

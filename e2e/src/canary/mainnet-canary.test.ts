@@ -25,6 +25,11 @@ import { localAccountWallet } from '../support/nodeWallet.js'
  *
  * It is refused unless E2E_MAINNET_CANARY equals the arming sentinel. The orchestration mirrors
  * apps/web/src/useRoundTrip.ts; keep the two in step when the flow changes.
+ *
+ * KNOWN LIMITATION: a failure after the inbound mint loses whatever has moved. The ephemeral Stark
+ * signing and viewing keys exist only in this process, so when the test fails they are destroyed
+ * and the funds cannot be recovered. Arm this only for an amount you are prepared to lose
+ * outright, until a security-reviewed recovery design replaces this behavior.
  */
 const armed = env.E2E_MAINNET_CANARY === CANARY_ARMED_VALUE
 const missing = (
@@ -175,9 +180,15 @@ describe.skipIf(!armed)('mainnet canary (spends real funds)', () => {
         expect(paid).toBeGreaterThanOrEqual(minimumOutput)
         clearIdentity(identity)
       } catch (error) {
-        // Match the browser: record the failure but keep the in-memory secrets for manual recovery.
+        // The browser keeps the failed tab, and its in-memory secrets, alive. This process does not:
+        // it exits when the test fails and takes the Stark signing and viewing keys with it, so
+        // anything already on the ephemeral account or shielded in the pool is unrecoverable. A real
+        // recovery path means persisting live key material and needs a security-reviewed design.
         log(`FAILED at phase ${flow.phase}: ${error instanceof Error ? error.message : String(error)}`)
-        log(`ephemeral Starknet account ${identity.address} may still hold funds; do not discard this process output`)
+        log(
+          `UNRECOVERABLE: ephemeral Starknet account ${identity.address} may hold funds, but its ` +
+            'signing and viewing keys are destroyed when this process exits; nothing logged here can restore them.',
+        )
         if (flow.phase !== 'completed' && flow.phase !== 'failed') {
           await api
             .updateFlow(flow.id, created.writeToken, {
