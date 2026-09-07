@@ -110,7 +110,12 @@ contract MainnetRoundTripForkTest {
         uint256 amountIn = 0.1 ether;
         (uint256 quoted, uint24 fee) = _bestQuote(Mainnet.WETH, Mainnet.USDC, amountIn);
         PrivacyEntryRouter.EntryIntent memory intent = _intent(
-            keccak256("eth"), PrivacyEntryRouter.InputAsset.ETH, amountIn, quoted * 99 / 100, fee
+            keccak256("eth"),
+            PrivacyEntryRouter.InputAsset.ETH,
+            amountIn,
+            quoted,
+            quoted * 99 / 100,
+            fee
         );
         uint256 supplyBefore = IERC20Supply(Mainnet.USDC).totalSupply();
         uint256 ethBefore = address(this).balance;
@@ -135,8 +140,9 @@ contract MainnetRoundTripForkTest {
         _buyWithEth(Mainnet.USDC, 0.1 ether);
         require(usdc.balanceOf(address(this)) >= amountIn, "not enough USDC bought");
         usdc.approve(address(entry), amountIn);
-        PrivacyEntryRouter.EntryIntent memory intent =
-            _intent(keccak256("usdc"), PrivacyEntryRouter.InputAsset.USDC, amountIn, amountIn, 0);
+        PrivacyEntryRouter.EntryIntent memory intent = _intent(
+            keccak256("usdc"), PrivacyEntryRouter.InputAsset.USDC, amountIn, amountIn, amountIn, 0
+        );
         uint256 supplyBefore = IERC20Supply(Mainnet.USDC).totalSupply();
 
         vm.recordLogs();
@@ -160,7 +166,12 @@ contract MainnetRoundTripForkTest {
         (uint256 quoted, uint24 fee) = _bestQuote(Mainnet.WBTC, Mainnet.USDC, amountIn);
         wbtc.approve(address(entry), amountIn);
         PrivacyEntryRouter.EntryIntent memory intent = _intent(
-            keccak256("wbtc"), PrivacyEntryRouter.InputAsset.WBTC, amountIn, quoted * 99 / 100, fee
+            keccak256("wbtc"),
+            PrivacyEntryRouter.InputAsset.WBTC,
+            amountIn,
+            quoted,
+            quoted * 99 / 100,
+            fee
         );
         uint256 wbtcBefore = wbtc.balanceOf(address(this));
 
@@ -179,7 +190,7 @@ contract MainnetRoundTripForkTest {
         uint256 amountIn = 0.1 ether;
         (uint256 quoted, uint24 fee) = _bestQuote(Mainnet.WETH, Mainnet.USDC, amountIn);
         PrivacyEntryRouter.EntryIntent memory intent = _intent(
-            keccak256("floor"), PrivacyEntryRouter.InputAsset.ETH, amountIn, quoted * 2, fee
+            keccak256("floor"), PrivacyEntryRouter.InputAsset.ETH, amountIn, quoted, quoted * 2, fee
         );
         vm.expectRevert();
         entry.start{ value: amountIn }(intent);
@@ -190,7 +201,12 @@ contract MainnetRoundTripForkTest {
         uint256 amountIn = 0.05 ether;
         (uint256 quoted, uint24 fee) = _bestQuote(Mainnet.WETH, Mainnet.USDC, amountIn);
         PrivacyEntryRouter.EntryIntent memory intent = _intent(
-            keccak256("replay"), PrivacyEntryRouter.InputAsset.ETH, amountIn, quoted * 99 / 100, fee
+            keccak256("replay"),
+            PrivacyEntryRouter.InputAsset.ETH,
+            amountIn,
+            quoted,
+            quoted * 99 / 100,
+            fee
         );
         entry.start{ value: amountIn }(intent);
         vm.expectRevert(
@@ -203,7 +219,12 @@ contract MainnetRoundTripForkTest {
         uint256 amountIn = 0.05 ether;
         (uint256 quoted, uint24 fee) = _bestQuote(Mainnet.WETH, Mainnet.USDC, amountIn);
         PrivacyEntryRouter.EntryIntent memory intent = _intent(
-            keccak256("value"), PrivacyEntryRouter.InputAsset.ETH, amountIn, quoted * 99 / 100, fee
+            keccak256("value"),
+            PrivacyEntryRouter.InputAsset.ETH,
+            amountIn,
+            quoted,
+            quoted * 99 / 100,
+            fee
         );
         vm.expectRevert(PrivacyEntryRouter.BadAmount.selector);
         entry.start{ value: amountIn - 1 }(intent);
@@ -335,10 +356,15 @@ contract MainnetRoundTripForkTest {
     // Helpers
     // ---------------------------------------------------------------------------------------
 
+    /// @dev `expectedUsdc` is the amount the entry is expected to burn and `minimumUsdc` the
+    /// slippage floor. They are separate because Circle's fee is a proportion of the amount that
+    /// actually burns, so the cap must come from the expectation, as QuoteService does when it
+    /// derives inboundCctpMaxFeeBase from the estimated bridge amount.
     function _intent(
         bytes32 flowId,
         PrivacyEntryRouter.InputAsset inputAsset,
         uint256 amountIn,
+        uint256 expectedUsdc,
         uint256 minimumUsdc,
         uint24 poolFee
     ) private view returns (PrivacyEntryRouter.EntryIntent memory) {
@@ -349,14 +375,15 @@ contract MainnetRoundTripForkTest {
             minimumUsdc: minimumUsdc,
             poolFee: poolFee,
             starknetRecipient: STARKNET_RECIPIENT,
-            cctpMaxFee: _fastTransferFee(minimumUsdc),
+            cctpMaxFee: _fastTransferFee(expectedUsdc),
             minFinalityThreshold: FAST_FINALITY,
             deadline: block.timestamp + 15 minutes
         });
     }
 
-    /// @dev One basis point, matching Circle's published fast-transfer minimum for domain 0 -> 25.
-    /// The live suite (e2e/src/mainnet/circle-iris.test.ts) checks the published value itself.
+    /// @dev One basis point of the expected burn amount, matching Circle's published fast-transfer
+    /// minimum for domain 0 -> 25. The live suite (e2e/src/mainnet/circle-iris.test.ts) checks the
+    /// published value itself.
     function _fastTransferFee(uint256 amount) private pure returns (uint256) {
         return (amount + 9_999) / 10_000;
     }
@@ -458,6 +485,10 @@ contract MainnetRoundTripForkTest {
         );
         require(destinationCaller == bytes32(0), "destination caller");
         require(maxFee == intent.cctpMaxFee, "max fee");
+        // The cap has to cover Circle's fee on the amount that actually burned. Deriving it from
+        // the slippage floor instead leaves the message underfunded whenever the swap beats the
+        // floor, which is the normal case.
+        require(maxFee >= _fastTransferFee(burned), "cap underfunded for the burned amount");
         require(hookData.length == 0, "entry must not carry hook data");
     }
 
