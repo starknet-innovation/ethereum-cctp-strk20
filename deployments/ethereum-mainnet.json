@@ -1,0 +1,38 @@
+{
+  "chainId": 1,
+  "deployer": "0xD5465752CC52BEe305b7576eFE778498dCD75CE1",
+  "compiler": {
+    "solc": "0.8.30",
+    "optimizer": true,
+    "optimizerRuns": 200
+  },
+  "dependencies": {
+    "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    "wbtc": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+    "weth": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    "uniswapV3SwapRouter": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    "circleTokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+  },
+  "contracts": {
+    "exitSettlementFactory": {
+      "address": "0x1fa1F600EC9A1044c19eE38C19BC85Df961BF4ba",
+      "transactionHash": "0x302a1c8f36ab6d8ff9f8d87b67e6a06d5850c828181e1fc25e3828b272b48727",
+      "blockNumber": 25926017,
+      "blockHash": "0xfab18eace25647026a7947495af7088e75d430f87a2923ddc4d3a9602dad9e4e",
+      "timestamp": "2026-09-07T14:17:11Z",
+      "runtimeCodeHash": "0xc2effaa8cf286a1f52311b1ea207bebee52b2ff893801d026e13fa1637495999",
+      "gasUsed": 1396686,
+      "effectiveGasPriceWei": "243282852"
+    },
+    "privacyEntryRouter": {
+      "address": "0xa56A5CF49B7071C014c4B3795bC8972e9E5E3637",
+      "transactionHash": "0x4ca58bff72ecbfda5f3f5b13fb2cfcf0c21120834bfcf3ed2a99f618bf9f7ee0",
+      "blockNumber": 25926018,
+      "blockHash": "0x839df1f2ca3d8dbdfd278d42fd2008e4c84b2bcb00ee891ba1f9232bba3437a8",
+      "timestamp": "2026-09-07T14:17:23Z",
+      "runtimeCodeHash": "0x26e0cc519f7c84e1569f51d2e82bfebe4841967257a8f225479d7ba7ee278917",
+      "gasUsed": 834447,
+      "effectiveGasPriceWei": "248239337"
+    }
+  }
+}

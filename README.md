@@ -37,6 +37,7 @@ or a separately reviewed scoped delegation design.
 | `packages/shared` | Mainnet constants, wire types, validation and lifecycle state machine |
 | `contracts/evm` | Entry router and immutable per-flow exit settlement contract |
 | `contracts/starknet` | Pool-only CCTP exit anonymizer |
+| `deployments` | Public deployment addresses, transactions, blocks and runtime code hashes |
 | `docs/ARCHITECTURE.md` | Trust boundaries, sequencing, failure handling and deployment gates |
 
 ## Local development
