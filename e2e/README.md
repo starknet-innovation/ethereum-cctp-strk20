@@ -10,6 +10,11 @@ npm run test:fork              # Foundry: contracts against a mainnet fork
 npm run test:e2e               # vitest: live checks + anvil-forked round trip (+ canary if armed)
 ```
 
+Both commands are defined at the repository root and both read `e2e/.env` — `test:fork` through a
+small Node wrapper, because `forge` does not read that file itself and the suite would otherwise
+skip every test while still reporting success. Variables already exported in your shell take
+precedence over the file.
+
 Requirements: Node 24, Foundry (`forge` and `anvil`), a mainnet Ethereum JSON-RPC endpoint and,
 for the Starknet checks, a Starknet mainnet JSON-RPC endpoint serving spec 0.9 or 0.10 —
 `e2e/.env.example` defaults to Starknet's public node, `https://mainnet.nodes.starknet.org/rpc/v0_9`.

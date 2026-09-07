@@ -8,7 +8,14 @@ const felt = z.string().regex(/^0x[0-9a-fA-F]{1,64}$/)
 const schema = z.object({
   ETHEREUM_RPC_URL: url.optional(),
   STARKNET_RPC_URL: url.optional(),
-  ETHEREUM_FORK_BLOCK: z.coerce.number().int().positive().optional(),
+  // 0 means "not pinned", the same convention the Foundry suite uses, so one workflow value can
+  // feed both consumers without depending on how forge coerces an empty string.
+  ETHEREUM_FORK_BLOCK: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .transform((value) => (value ? value : undefined)),
   ETHEREUM_ENTRY_ROUTER: address.optional(),
   ETHEREUM_EXIT_SETTLEMENT_FACTORY: address.optional(),
   STARKNET_CCTP_EXIT_ANONYMIZER: felt.optional(),

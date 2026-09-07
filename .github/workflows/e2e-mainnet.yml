@@ -8,7 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       fork_block:
-        description: Optional pinned Ethereum block for the anvil and Foundry fork suites
+        description: >-
+          Optional pinned Ethereum block for the anvil and Foundry fork suites. Needs an
+          archive-capable RPC; leave empty to fork the latest block.
         required: false
         default: ""
 
@@ -27,7 +29,9 @@ jobs:
     env:
       ETHEREUM_RPC_URL: ${{ secrets.ETHEREUM_RPC_URL }}
       STARKNET_RPC_URL: ${{ secrets.STARKNET_RPC_URL }}
-      ETHEREUM_FORK_BLOCK: ${{ inputs.fork_block }}
+      # Normalised to 0 ("not pinned") rather than left empty: vm.envOr's numeric fallback only
+      # applies to an absent variable, so an empty string is version-dependent at best.
+      ETHEREUM_FORK_BLOCK: ${{ inputs.fork_block || '0' }}
       ETHEREUM_ENTRY_ROUTER: ${{ vars.ETHEREUM_ENTRY_ROUTER }}
       ETHEREUM_EXIT_SETTLEMENT_FACTORY: ${{ vars.ETHEREUM_EXIT_SETTLEMENT_FACTORY }}
       STARKNET_CCTP_EXIT_ANONYMIZER: ${{ vars.STARKNET_CCTP_EXIT_ANONYMIZER }}
