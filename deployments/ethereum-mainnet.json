@@ -1,6 +1,7 @@
 {
   "chainId": 1,
   "deployer": "0xD5465752CC52BEe305b7576eFE778498dCD75CE1",
+  "relayer": "0x75dBBDd00746AE5F4Ae4cF534B7156FE9dB61123",
   "compiler": {
     "solc": "0.8.30",
     "optimizer": true,
