@@ -328,6 +328,14 @@ Resources:
             Value: https://ethereum-cctp-strk20.vercel.app
           - Name: ESTIMATED_STARKNET_FEES_USDC
             Value: '2'
+          # Public, immutable deployment addresses live outside the retained runtime secret so
+          # normal GitHub deployments can update them without reading or rotating secret values.
+          - Name: ETHEREUM_ENTRY_ROUTER
+            Value: 0xa56A5CF49B7071C014c4B3795bC8972e9E5E3637
+          - Name: ETHEREUM_EXIT_SETTLEMENT_FACTORY
+            Value: 0x1fa1F600EC9A1044c19eE38C19BC85Df961BF4ba
+          - Name: STARKNET_CCTP_EXIT_ANONYMIZER
+            Value: 0x038bc3151769a0aa4a2d43a6dc2f3f0b0830a91ec4d61bfe1058e58eefa4b58e
           - Name: STATE_CACHE_ENDPOINT
             Value: !GetAtt StateCache.Endpoint.Address
           - Name: STATE_CACHE_PORT
