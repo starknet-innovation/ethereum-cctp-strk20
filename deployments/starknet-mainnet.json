@@ -1,0 +1,35 @@
+{
+  "chainId": "0x534e5f4d41494e",
+  "deployerAccount": "tongo-deployer",
+  "deployerAddress": "0x0313b535fa6492625ad070d5016404255d9a18967859dc71edfdb1b1fc025b89",
+  "compiler": {
+    "scarb": "2.18.0",
+    "cairo": "2.18.0",
+    "profile": "release",
+    "inliningStrategy": 250
+  },
+  "dependencies": {
+    "privacyPool": "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a",
+    "usdc": "0x033068F6539f8e6e6b131e6B2B814e6c34A5224bC66947c47DaB9dFeE93b35fb",
+    "circleTokenMessengerMinterV2": "0x07d421B9cA8aA32DF259965cDA8ACb93F7599F69209A41872AE84638B2A20F2a"
+  },
+  "declaration": {
+    "classHash": "0x03e13eae73c119da5fb71c03baf396f042224f23f8b42feb015a0c02bf6bf4a2",
+    "transactionHash": "0x037ff8ef5626cd6dacc1903a2446d4c528bc62624748690d478d824b172b360d",
+    "blockNumber": 14508941,
+    "blockHash": "0x07dc8fe64937ee3dcd543ddf785af4db7df07a2f4a299effe98f6b0235456171",
+    "timestamp": "2026-09-07T14:24:43Z",
+    "actualFeeFri": "5826329278180665728"
+  },
+  "contract": {
+    "name": "CctpExitAnonymizer",
+    "address": "0x038bc3151769a0aa4a2d43a6dc2f3f0b0830a91ec4d61bfe1058e58eefa4b58e",
+    "transactionHash": "0x01253750e85f0d8fb626ea12c740509d5b0171defaad028d5c6070c82de8d05c",
+    "blockNumber": 14508968,
+    "blockHash": "0x04ba1e05ddd60afcfbe25c44a97ba0e485cbbb791ebc97fcd74600272efa1e39",
+    "timestamp": "2026-09-07T14:25:28Z",
+    "actualFeeFri": "74592954206127984",
+    "salt": "0x923fd476f377d3c3fb7e50c96ccb4bbd",
+    "unique": true
+  }
+}
