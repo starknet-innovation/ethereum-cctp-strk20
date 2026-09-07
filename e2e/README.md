@@ -11,7 +11,8 @@ npm run test:e2e               # vitest: live checks + anvil-forked round trip (
 ```
 
 Requirements: Node 24, Foundry (`forge` and `anvil`), a mainnet Ethereum JSON-RPC endpoint and,
-for the Starknet checks, a Starknet mainnet JSON-RPC endpoint serving spec 0.9 or 0.10.
+for the Starknet checks, a Starknet mainnet JSON-RPC endpoint serving spec 0.9 or 0.10 —
+`e2e/.env.example` defaults to Starknet's public node, `https://mainnet.nodes.starknet.org/rpc/v0_9`.
 
 ## Layers
 
@@ -24,8 +25,12 @@ for the Starknet checks, a Starknet mainnet JSON-RPC endpoint serving spec 0.9 o
 | Deployment verification | `src/mainnet/deployment.test.ts`, `remote-api.test.ts` | No | When `ETHEREUM_ENTRY_ROUTER`, `ETHEREUM_EXIT_SETTLEMENT_FACTORY`, `STARKNET_CCTP_EXIT_ANONYMIZER` or `E2E_API_URL` are set: deployed immutables match the pinned constants, the factory embeds the `ExitSettlement` creation code compiled from this tree, the anonymizer routes through the pinned pool, the deployed API publishes the same values. |
 | Canary | `src/canary/mainnet-canary.test.ts` | **Yes** | Deployment gate 7: the full route including the Starknet privacy leg, using the same `apps/web` modules the browser runs, against a ready API. |
 
-Tests whose configuration is missing are reported as skipped. The preflight test fails when no RPC
-URL is configured at all, unless `E2E_ALLOW_EMPTY=1` acknowledges an all-skipped run.
+Tests whose configuration is missing are reported as skipped, and the preflight test fails when no
+RPC URL is configured at all. Because skipping is silent, a command that targets one chain declares
+it through `E2E_REQUIRE` so it cannot report success having exercised nothing: `npm run test:e2e:fork`
+sets `E2E_REQUIRE=ethereum`, `npm run test:e2e:live` sets `E2E_REQUIRE=ethereum,starknet`, and the CI
+workflow requires both. `E2E_ALLOW_EMPTY=1` waives both checks to acknowledge a deliberately partial
+or all-skipped run.
 
 ## What is not covered on a fork
 

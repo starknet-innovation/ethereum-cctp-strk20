@@ -32,6 +32,9 @@ jobs:
       ETHEREUM_EXIT_SETTLEMENT_FACTORY: ${{ vars.ETHEREUM_EXIT_SETTLEMENT_FACTORY }}
       STARKNET_CCTP_EXIT_ANONYMIZER: ${{ vars.STARKNET_CCTP_EXIT_ANONYMIZER }}
       E2E_API_URL: ${{ vars.E2E_API_URL }}
+      # This gate exists to cover both chains; make a half-configured run fail rather than pass
+      # with one chain's tests silently skipped.
+      E2E_REQUIRE: ethereum,starknet
 
     steps:
       - name: Check out repository
@@ -41,8 +44,14 @@ jobs:
 
       - name: Require RPC configuration
         run: |
-          if [ -z "$ETHEREUM_RPC_URL" ]; then
-            echo "Set the ETHEREUM_RPC_URL repository secret before running this workflow." >&2
+          # Plain if-blocks: under the default `bash -e`, a false `[ -z ]` in an && chain would
+          # return non-zero and fail this step exactly when both secrets are correctly set.
+          missing=""
+          if [ -z "$ETHEREUM_RPC_URL" ]; then missing="ETHEREUM_RPC_URL"; fi
+          if [ -z "$STARKNET_RPC_URL" ]; then missing="${missing:+$missing and }STARKNET_RPC_URL"; fi
+          if [ -n "$missing" ]; then
+            echo "Set the $missing repository secret(s) before running this workflow." >&2
+            echo "Both chains are in scope here; a missing secret would skip that chain's tests." >&2
             exit 1
           fi
 

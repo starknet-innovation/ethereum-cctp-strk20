@@ -6,8 +6,8 @@
   "description": "Mainnet end-to-end integration suite: live dependency checks, forked-mainnet EVM round trips, and the gated real-funds canary.",
   "scripts": {
     "test:e2e": "vitest run",
-    "test:e2e:live": "vitest run src/preflight.test.ts src/mainnet",
-    "test:e2e:fork": "vitest run src/preflight.test.ts src/fork",
+    "test:e2e:live": "E2E_REQUIRE=ethereum,starknet vitest run src/preflight.test.ts src/mainnet",
+    "test:e2e:fork": "E2E_REQUIRE=ethereum vitest run src/preflight.test.ts src/fork",
     "test:e2e:canary": "vitest run src/canary",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
