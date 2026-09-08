@@ -16,9 +16,10 @@ cast wallet new ~/.foundry/keystores/ethereum-cctp-strk20-canary
 cast wallet address --account ethereum-cctp-strk20-canary
 ```
 
-Fund only the intended canary input plus gas. The runner hard-caps a single input at `0.01 ETH`,
-`25 USDC`, or `0.0005 WBTC` and requires input and output to match. It rejects a quote whose
-worst-case output exceeds the configured loss ceiling.
+Fund only the intended canary input plus gas. The runner hard-caps a single input at `0.003 ETH`,
+`10 USDC`, or `0.00008 WBTC`, rejects any route carrying more than `10 USDC` across CCTP, and
+requires input and output to match. It rejects a quote whose worst-case output exceeds the
+configured loss ceiling.
 
 First prepare a flow and run all non-transaction checks:
 

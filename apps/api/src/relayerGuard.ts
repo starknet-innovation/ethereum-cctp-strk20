@@ -2,6 +2,8 @@ import type { ApiConfig } from './config.js'
 import type { StateStore } from './stateStore.js'
 
 const GWEI = 1_000_000_000n
+const MIN_MAX_FEE_PER_GAS = GWEI
+const MIN_PRIORITY_FEE_PER_GAS = 50_000_000n
 
 export type RelayerMetric =
   | 'RelayerBalanceGwei'
@@ -12,6 +14,8 @@ export type RelayerMetric =
 
 export interface RelayerReservation {
   gasLimit: bigint
+  maxFeePerGas: bigint
+  maxPriorityFeePerGas: bigint
   maxCostGwei: number
   budgetUsedGwei: number
 }
@@ -30,7 +34,10 @@ export async function reserveRelayerSpend(args: {
   config: ApiConfig
   stateStore: StateStore
   estimateGas: () => Promise<bigint>
-  estimateMaxFeePerGas: () => Promise<bigint>
+  estimateFeesPerGas: () => Promise<{
+    maxFeePerGas: bigint
+    maxPriorityFeePerGas: bigint
+  }>
   getBalance: () => Promise<bigint>
   emitMetric: (name: RelayerMetric, value: number, details?: Record<string, string | number>) => void
   maxGasPerTransaction?: bigint
@@ -52,7 +59,16 @@ export async function reserveRelayerSpend(args: {
     )
   }
 
-  const maxFeePerGas = await args.estimateMaxFeePerGas()
+  const estimatedFees = await args.estimateFeesPerGas()
+  const maxPriorityFeePerGas = maxBigInt(
+    estimatedFees.maxPriorityFeePerGas,
+    MIN_PRIORITY_FEE_PER_GAS,
+  )
+  const maxFeePerGas = maxBigInt(
+    estimatedFees.maxFeePerGas,
+    MIN_MAX_FEE_PER_GAS,
+    maxPriorityFeePerGas,
+  )
   const maxCostWei = gasLimit * maxFeePerGas
   const balance = await args.getBalance()
   const balanceGwei = Number(balance / GWEI)
@@ -88,7 +104,7 @@ export async function reserveRelayerSpend(args: {
     dailyLimitGwei: args.config.RELAYER_DAILY_SPEND_LIMIT_GWEI,
   })
 
-  return { gasLimit, maxCostGwei, budgetUsedGwei }
+  return { gasLimit, maxFeePerGas, maxPriorityFeePerGas, maxCostGwei, budgetUsedGwei }
 }
 
 export function relayerMetricEvent(
@@ -121,6 +137,10 @@ function applyBasisPoints(value: bigint, basisPoints: number): bigint {
 
 function divideRoundUp(value: bigint, divisor: bigint): bigint {
   return (value + divisor - 1n) / divisor
+}
+
+function maxBigInt(...values: bigint[]): bigint {
+  return values.reduce((maximum, value) => (value > maximum ? value : maximum))
 }
 
 function dailyBudgetKey(now: Date): string {

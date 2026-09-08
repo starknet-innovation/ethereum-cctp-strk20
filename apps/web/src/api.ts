@@ -15,9 +15,13 @@ const API =
   (import.meta.env?.DEV ? 'http://localhost:8787' : '')
 
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  if (init?.body !== undefined && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json')
+  }
   const response = await fetch(`${API}${path}`, {
     ...init,
-    headers: { 'content-type': 'application/json', ...init?.headers },
+    headers,
   })
   const body = (await response.json()) as T & { error?: unknown }
   if (!response.ok) {

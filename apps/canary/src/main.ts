@@ -39,11 +39,12 @@ import { bindLocalAccount } from './localSigner.js'
 const DEFAULT_API_URL =
   'https://et-3a2b9d82b0504dbe9e8af1be336446d6.ecs.eu-west-3.on.aws'
 const DEFAULT_ACCOUNT = 'ethereum-cctp-strk20-canary'
-const MIN_GAS_RESERVE_WEI = parseUnits('0.001', 18)
+const MIN_GAS_RESERVE_WEI = parseUnits('0.00025', 18)
+const MAX_BRIDGE_USDC = parseUnits('10', 6)
 const MAX_INPUT: Record<TokenSymbol, bigint> = {
-  ETH: parseUnits('0.01', 18),
-  USDC: parseUnits('25', 6),
-  WBTC: parseUnits('0.0005', 8),
+  ETH: parseUnits('0.003', 18),
+  USDC: parseUnits('10', 6),
+  WBTC: parseUnits('0.00008', 8),
 }
 const ENTRY_ABI = [
   {
@@ -214,6 +215,21 @@ async function main() {
       state = await refreshPreparedFlow(state, api)
       save(state)
     }
+    const storedViewingKey = BigInt(state.identity.viewingKey)
+    if (!identityModule.isCanonicalViewingKey(storedViewingKey)) {
+      const canRepairUncommittedKey =
+        state.stage === 'starknet-funded' &&
+        !state.depositTxHash &&
+        state.lastError?.includes('PRIVATE_KEY_NOT_CANONICAL')
+      if (!canRepairUncommittedKey) {
+        throw new Error('Recovery journal contains a non-canonical privacy viewing key')
+      }
+      state.identity.viewingKey = identityModule.createViewingKey().toString()
+      delete state.lastError
+      state.updatedAt = new Date().toISOString()
+      save(state)
+      log('Replaced the rejected, uncommitted privacy viewing key with a canonical key')
+    }
     const identity = restoreIdentity(state.identity)
 
     if (state.stage === 'prepared') {
@@ -321,10 +337,16 @@ async function main() {
     }
 
     if (state.stage === 'settlement-created') {
-      await waitForEthereumTransaction(
-        ethereumClient,
-        required(state.settlementCreateTxHash, 'settlement creation transaction'),
-      )
+      const settlement = required(state.settlement, 'settlement address') as Address
+      const settlementCode = await ethereumClient.getBytecode({ address: settlement })
+      if (!settlementCode || settlementCode === '0x') {
+        await waitForEthereumTransaction(
+          ethereumClient,
+          required(state.settlementCreateTxHash, 'settlement creation transaction'),
+        )
+      } else if (state.lastError?.includes('Timed out while waiting for transaction')) {
+        log('Settlement deployment is confirmed through its deterministic contract address')
+      }
       log('Generating the private exit proof and starting CCTP back to Ethereum…')
       if (!state.exitTxHash) {
         state.exitTxHash = await starknetModule.sponsoredPrivacyExit({
@@ -545,6 +567,9 @@ async function prepareState(args: {
   })
   if (BigInt(quote.inputAmountBase) !== amountBase) {
     throw new Error('Backend quote input does not match the requested amount')
+  }
+  if (BigInt(quote.estimatedBridgeAmountBase) > MAX_BRIDGE_USDC) {
+    throw new Error('Canary input exceeds the hard 10 USDC-equivalent bridge cap')
   }
   const minimum = BigInt(quote.minimumOutputAmountBase)
   if (minimum <= 0n) throw new Error('Backend quote has no positive minimum output')

@@ -1,4 +1,5 @@
 import { CHAIN } from '@privacy-round-trip/shared'
+import { MAX_VIEWING_KEY } from '@starkware-libs/starknet-privacy-sdk'
 import { ec, hash, num, Signer, type SignerInterface } from 'starknet'
 
 export interface EphemeralIdentity {
@@ -18,7 +19,7 @@ function randomSeed(): string {
 
 export function createEphemeralIdentity(): EphemeralIdentity {
   const privateKey = normalizeHex(ec.starkCurve.grindKey(randomSeed()))
-  const viewingKey = BigInt(normalizeHex(ec.starkCurve.grindKey(randomSeed())))
+  const viewingKey = createViewingKey()
   const publicKey = ec.starkCurve.getStarkKey(privateKey)
   const salt = num.toHex(publicKey)
   const classHash = CHAIN.starknet.ozAccountClassHash
@@ -32,6 +33,17 @@ export function createEphemeralIdentity(): EphemeralIdentity {
     viewingKey,
     signer: new Signer(privateKey),
   }
+}
+
+export function createViewingKey(): bigint {
+  while (true) {
+    const candidate = BigInt(normalizeHex(ec.starkCurve.grindKey(randomSeed())))
+    if (isCanonicalViewingKey(candidate)) return candidate
+  }
+}
+
+export function isCanonicalViewingKey(value: bigint): boolean {
+  return value >= 1n && value <= MAX_VIEWING_KEY
 }
 
 export function clearIdentity(identity: EphemeralIdentity | undefined): void {

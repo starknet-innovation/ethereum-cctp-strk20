@@ -436,7 +436,7 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
           functionName: 'predict',
           args,
         })
-        const { request: transaction } = await publicClient.simulateContract({
+        await publicClient.simulateContract({
           account,
           address: factory,
           abi: SETTLEMENT_FACTORY_ABI,
@@ -455,9 +455,12 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
               functionName: 'create',
               args,
             }),
-          estimateMaxFeePerGas: async () => {
+          estimateFeesPerGas: async () => {
             const fees = await publicClient.estimateFeesPerGas()
-            return fees.maxFeePerGas
+            return {
+              maxFeePerGas: fees.maxFeePerGas,
+              maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+            }
           },
           getBalance: () => publicClient.getBalance({ address: account.address }),
           emitMetric,
@@ -467,7 +470,18 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
         })
         let txHash: Hex
         try {
-          txHash = await wallet.writeContract({ ...transaction, gas: reservation.gasLimit })
+          txHash = await wallet.writeContract({
+            account,
+            chain: mainnet,
+            address: factory,
+            abi: SETTLEMENT_FACTORY_ABI,
+            functionName: 'create',
+            args,
+            type: 'eip1559',
+            gas: reservation.gasLimit,
+            maxFeePerGas: reservation.maxFeePerGas,
+            maxPriorityFeePerGas: reservation.maxPriorityFeePerGas,
+          })
         } catch (error) {
           emitMetric('RelayerSubmissionUnknown', 1, { operation: 'create-settlement' })
           throw error
@@ -519,7 +533,7 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
           transport: http(config.ETHEREUM_RPC_URL),
         })
         const settlement = parsed.data.address as Address
-        const { request: transaction } = await publicClient.simulateContract({
+        await publicClient.simulateContract({
           account,
           address: settlement,
           abi: EXIT_SETTLEMENT_ABI,
@@ -536,16 +550,29 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
               abi: EXIT_SETTLEMENT_ABI,
               functionName: 'settle',
             }),
-          estimateMaxFeePerGas: async () => {
+          estimateFeesPerGas: async () => {
             const fees = await publicClient.estimateFeesPerGas()
-            return fees.maxFeePerGas
+            return {
+              maxFeePerGas: fees.maxFeePerGas,
+              maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+            }
           },
           getBalance: () => publicClient.getBalance({ address: account.address }),
           emitMetric,
         })
         let txHash: Hex
         try {
-          txHash = await wallet.writeContract({ ...transaction, gas: reservation.gasLimit })
+          txHash = await wallet.writeContract({
+            account,
+            chain: mainnet,
+            address: settlement,
+            abi: EXIT_SETTLEMENT_ABI,
+            functionName: 'settle',
+            type: 'eip1559',
+            gas: reservation.gasLimit,
+            maxFeePerGas: reservation.maxFeePerGas,
+            maxPriorityFeePerGas: reservation.maxPriorityFeePerGas,
+          })
         } catch (error) {
           emitMetric('RelayerSubmissionUnknown', 1, { operation: 'settle' })
           throw error

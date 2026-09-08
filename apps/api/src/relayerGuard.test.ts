@@ -31,7 +31,10 @@ function attempt(
     config: overrides.config ?? config,
     stateStore,
     estimateGas: async () => overrides.gas ?? 100_000n,
-    estimateMaxFeePerGas: async () => overrides.fee ?? 2_000_000_000n,
+    estimateFeesPerGas: async () => ({
+      maxFeePerGas: overrides.fee ?? 2_000_000_000n,
+      maxPriorityFeePerGas: 0n,
+    }),
     getBalance: async () => overrides.balance ?? 10_000_000_000_000_000n,
     emitMetric: overrides.emitMetric ?? (() => undefined),
     ...(overrides.maxGasPerTransaction === undefined
@@ -86,6 +89,13 @@ describe('relayer guard', () => {
     })).resolves.toMatchObject({ gasLimit: 1_122_058n })
     await expect(attempt(new MemoryStateStore(), { gas: 897_646n })).rejects.toMatchObject({
       code: 'gas-limit',
+    })
+  })
+
+  it('applies a non-zero priority fee and a one-gwei maximum fee floor', async () => {
+    await expect(attempt(new MemoryStateStore(), { fee: 200_000_000n })).resolves.toMatchObject({
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 50_000_000n,
     })
   })
 })
