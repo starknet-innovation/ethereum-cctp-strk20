@@ -163,6 +163,23 @@ export async function privateUsdcBalance(identity: EphemeralIdentity): Promise<b
   return (notes.get(CHAIN.starknet.usdc) ?? []).reduce((total, note) => total + BigInt(note.amount), 0n)
 }
 
+/**
+ * Whether a Starknet transaction is included and succeeded. A hash recorded at submission time is
+ * not proof the transaction landed: reverted, dropped, or still-unknown transactions return false.
+ */
+export async function starknetTransactionSucceeded(txHash: string, attempts = 3): Promise<boolean> {
+  const provider = providerForApp()
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const receipt = await provider.getTransactionReceipt(txHash)
+      return 'isSuccess' in receipt && typeof receipt.isSuccess === 'function' ? receipt.isSuccess() : false
+    } catch {
+      if (attempt < attempts - 1) await sleep(POLL_MS)
+    }
+  }
+  return false
+}
+
 export async function isAccountDeployed(address: string, provider = providerForApp()): Promise<boolean> {
   try {
     await provider.getClassHashAt(address)

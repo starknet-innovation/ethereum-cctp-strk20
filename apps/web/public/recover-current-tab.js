@@ -12,24 +12,24 @@ try {
   for (const root of roots) visit(root)
 
   const identity = identities.find((value) => value.privateKey && value.viewingKey > 0n)
-  // Any stopped flow that left Ethereum can be recovered; the API record may lag the chain, so the
-  // phase is only a hint. Prefer the flow the app marked as failed.
-  const candidates = flows.filter(
-    (value) =>
-      identity &&
-      sameFelt(value.starknetAccount, identity.address) &&
-      value.entryTxHash &&
-      value.phase !== 'completed',
+  // Any stopped flow that left Ethereum can be recovered. The API record may lag the chain (the
+  // entry-submitted PATCH can fail after the Ethereum transaction succeeded), so the entry hash is
+  // taken from either the record or the tab's own progress hint for that flow.
+  const accountFlows = flows.filter(
+    (value) => identity && sameFelt(value.starknetAccount, identity.address) && value.phase !== 'completed',
   )
+  const progressFor = (flow) =>
+    progressHints.find((value) => value.flowId === flow.id) ??
+    (progressHints.length === 1 ? progressHints[0] : undefined)
+  const candidates = accountFlows.filter((flow) => flow.entryTxHash || progressFor(flow)?.entryTxHash)
   const sourceFlow = candidates.find((value) => value.phase === 'failed') ?? candidates[0]
+  const progress = sourceFlow ? progressFor(sourceFlow) ?? {} : {}
   const form = forms.find(
     (value) =>
       typeof value.recipient === 'string' &&
       /^0x[0-9a-fA-F]{40}$/.test(value.recipient) &&
       ['ETH', 'USDC', 'WBTC'].includes(value.outputToken),
   )
-  const progress =
-    progressHints.find((value) => sourceFlow && value.flowId === sourceFlow.id) ?? progressHints[0] ?? {}
 
   if (!identity) throw new Error('The one-use account key was not found. Keep this tab open.')
   if (!sourceFlow) throw new Error('No stopped flow with an Ethereum entry was found. Keep this tab open.')
@@ -45,7 +45,10 @@ try {
       privateKey: identity.privateKey,
       viewingKey: identity.viewingKey.toString(),
     },
-    sourceFlow,
+    sourceFlow: {
+      ...sourceFlow,
+      ...(sourceFlow.entryTxHash ? {} : { entryTxHash: progress.entryTxHash }),
+    },
     form: {
       inputToken: form.inputToken,
       outputToken: form.outputToken,

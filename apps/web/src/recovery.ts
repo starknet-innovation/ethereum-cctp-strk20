@@ -1,5 +1,5 @@
-import { POC_DEPLOYMENTS, type PublicFlow, type TokenSymbol } from '@privacy-round-trip/shared'
-import { isAddress, type Address, type Hex } from 'viem'
+import { POC_DEPLOYMENTS, TOKENS, type PublicFlow, type TokenSymbol } from '@privacy-round-trip/shared'
+import { formatUnits, isAddress, type Address, type Hex } from 'viem'
 import { api } from './api.js'
 import { assertPinnedDeployments } from './deployments.js'
 import {
@@ -16,6 +16,7 @@ import {
   sponsoredMint,
   sponsoredPrivacyDeposit,
   sponsoredPrivacyExit,
+  starknetTransactionSucceeded,
   starknetUsdcBalance,
   waitForCircleAttestation,
   waitForPrivacyProvingReadyAfterTx,
@@ -57,6 +58,8 @@ interface RecoveryBundle {
   writeToken?: string
   /** True once the private deposit is known to exist, with or without a transaction hash. */
   deposited?: boolean
+  /** True once a deposit hint has been checked against the chain (receipt or note discovery). */
+  depositVerified?: boolean
   mintTxHash?: string
   privateAmount?: string
   depositTxHash?: string
@@ -108,6 +111,7 @@ async function run(): Promise<void> {
   try {
     const wallet = await connectedWallet(bundle.sourceFlow.ethereumSender)
     assertPinnedDeployments(await api.config())
+    if (!bundle.recoveryFlow) await confirmDepositEvidence()
     let flow = await recoveryFlow()
     const capability = capabilityFor(flow)
 
@@ -123,15 +127,24 @@ async function run(): Promise<void> {
       if (!bundle.deposited) {
         update('The bridged USDC is safe. Generating and submitting the private deposit proof…')
         const balance = await starknetUsdcBalance(identity.address)
-        if (balance <= 0n) throw new Error('No public USDC remains in the recovery account')
-        const deposit = await sponsoredPrivacyDeposit({
-          identity,
-          amount: balance,
-          capability,
-          proofCheckpoint: proofCheckpoint('depositProof'),
-          onTransactionSubmitted: (submitted) => recordDeposit(submitted.txHash, submitted.privateAmount),
-        })
-        recordDeposit(deposit.txHash, deposit.privateAmount)
+        if (balance > 0n) {
+          const deposit = await sponsoredPrivacyDeposit({
+            identity,
+            amount: balance,
+            capability,
+            proofCheckpoint: proofCheckpoint('depositProof'),
+            onTransactionSubmitted: (submitted) => recordDeposit(submitted.txHash, submitted.privateAmount),
+          })
+          recordDeposit(deposit.txHash, deposit.privateAmount)
+        } else {
+          // A deposit that was pending during an earlier check may have landed since.
+          const shielded = await privateUsdcBalance(identity)
+          if (shielded <= 0n) throw new Error('No public USDC remains in the recovery account')
+          bundle.deposited = true
+          bundle.privateAmount = shielded.toString()
+          bundle.depositedAt ??= new Date().toISOString()
+          saveBundle()
+        }
       }
       proofCheckpoint('depositProof').clear()
       flow = await transition(flow, 'privacy-delay', {
@@ -241,7 +254,14 @@ async function recoveryFlow(): Promise<PublicFlow> {
   }
 
   update('Creating a fresh, account-scoped recovery capability…')
-  const quote = await api.quote(bundle.sourceFlow.quote.request)
+  // Quote from the USDC recovery actually operates on. Re-quoting the original input asset would
+  // let a price move since entry fix a settlement minimum the real USDC cannot buy.
+  const quote = await api.quote({
+    inputToken: 'USDC',
+    outputToken: bundle.form.outputToken,
+    amount: formatUnits(await recoverableUsdcAmount(), TOKENS.USDC.decimals),
+    slippageBps: 100,
+  })
   const created = await api.createFlow({
     quoteId: quote.quoteId,
     ethereumSender: bundle.sourceFlow.ethereumSender,
@@ -264,6 +284,51 @@ async function recoveryFlow(): Promise<PublicFlow> {
     ...(bundle.depositTxHash ? { txHash: bundle.depositTxHash } : {}),
     occurredAt: bundle.depositedAt ?? new Date().toISOString(),
   })
+}
+
+/**
+ * A deposit hash recorded at submission time is not proof the deposit landed. Before the recovery
+ * flow's phases are fixed, confirm the receipt or find the private note; otherwise treat the
+ * deposit as not having happened so the still-public USDC is shielded instead of skipped.
+ */
+async function confirmDepositEvidence(): Promise<void> {
+  if (!bundle.deposited || bundle.depositVerified) return
+  update('Confirming the recorded private deposit on Starknet…')
+  const confirmed = bundle.depositTxHash ? await starknetTransactionSucceeded(bundle.depositTxHash) : false
+  if (!confirmed) {
+    const shielded = await privateUsdcBalance(identity)
+    if (shielded > 0n) {
+      bundle.privateAmount = shielded.toString()
+    } else {
+      bundle.deposited = false
+      delete bundle.depositTxHash
+      delete bundle.privateAmount
+      delete bundle.depositedAt
+    }
+  }
+  bundle.depositVerified = true
+  saveBundle()
+}
+
+/** The USDC amount recovery will move, so the route quote and settlement minimum match it. */
+async function recoverableUsdcAmount(): Promise<bigint> {
+  if (bundle.deposited) {
+    if (bundle.privateAmount) return BigInt(bundle.privateAmount)
+    const shielded = await privateUsdcBalance(identity)
+    if (shielded > 0n) {
+      bundle.privateAmount = shielded.toString()
+      saveBundle()
+      return shielded
+    }
+  }
+  const balance = await starknetUsdcBalance(identity.address)
+  if (balance > 0n) return balance
+  // Nothing has arrived yet: size the route from the entry quote's expected mint.
+  const expected =
+    BigInt(bundle.sourceFlow.quote.estimatedBridgeAmountBase) -
+    BigInt(bundle.sourceFlow.quote.inboundCctpMaxFeeBase)
+  if (expected <= 0n) throw new Error('The stopped flow has no recoverable USDC amount')
+  return expected
 }
 
 /**
@@ -419,6 +484,7 @@ function readBundle(): RecoveryBundle {
 /** Prefer what the stopped tab knew over what the (possibly stale) API record says. */
 function seedFromHints(value: RecoveryBundle): void {
   const progress = value.progress ?? {}
+  if (!value.sourceFlow.entryTxHash && progress.entryTxHash) value.sourceFlow.entryTxHash = progress.entryTxHash
   const mintTxHash = value.mintTxHash ?? progress.inboundMintTxHash ?? value.sourceFlow.inboundMintTxHash
   if (mintTxHash) value.mintTxHash = mintTxHash
   const depositTxHash = value.depositTxHash ?? progress.depositTxHash ?? value.sourceFlow.poolDepositTxHash
