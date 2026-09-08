@@ -25,7 +25,11 @@ export class StarkscanProofProvider implements ProofProviderInterface {
     fetchImpl?: typeof fetch
   }) {
     this.proofsUrl = `${args.apiBaseUrl.replace(/\/$/, '')}/v1/proofs`
-    this.fetchImpl = args.fetchImpl ?? fetch
+    // Window.fetch is not a context-free function in every browser. Keeping the native function
+    // as a class property and invoking it as `this.fetchImpl(...)` changes its receiver to this
+    // provider, which Chromium/WebKit reject with "Illegal invocation". Bind the implementation
+    // once so native fetch always receives the global object as its receiver.
+    this.fetchImpl = (args.fetchImpl ?? fetch).bind(globalThis)
     this.defaults = new ProvingServiceProofProvider(this.proofsUrl, constants.StarknetChainId.SN_MAIN, {
       nodeUrl: args.rpcUrl,
       poolAddress: args.poolAddress,

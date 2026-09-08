@@ -68,6 +68,43 @@ describe('StarkscanProofProvider', () => {
     )
   })
 
+  it('calls fetch with the browser global as its receiver', async () => {
+    const fetchImpl = function (this: unknown): Promise<Response> {
+      if (this !== globalThis) throw new TypeError('Illegal invocation')
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            jobId: 'prv_9f2c1ab34de56789012345ac',
+            status: 'succeeded',
+            terminal: true,
+            pollToken: 'b'.repeat(64),
+            result: {
+              proof: 'proof-data',
+              proof_facts: [],
+              l2_to_l1_messages: [],
+            },
+          }),
+          { status: 202, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+    } as typeof fetch
+    const provider = new StarkscanProofProvider({
+      apiBaseUrl: 'https://api.example',
+      rpcUrl: 'https://rpc.example',
+      poolAddress: '0x123',
+      fetchImpl,
+    })
+    const invocation = {
+      type: 'INVOKE',
+      sender_address: '0x123',
+      calldata: [],
+    } as unknown as ProofInvocation
+
+    await expect(provider.prove(invocation, 12_446_898)).resolves.toMatchObject({
+      data: 'proof-data',
+    })
+  })
+
   it('fails closed without an explicit block number', async () => {
     const provider = new StarkscanProofProvider({
       apiBaseUrl: 'https://api.example',
