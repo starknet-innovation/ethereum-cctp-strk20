@@ -176,3 +176,7 @@ Do not open the route button until all of these are complete:
 
 The `/v1/health/ready` endpoint fails closed and the UI displays the exact missing deployment
 configuration until these runtime values are supplied.
+
+The dedicated `apps/canary` runner covers the real deployed-backend path with an encrypted local
+Foundry account and encrypted recovery journal. It has a transaction-free preflight mode and hard
+per-run input and quote-loss caps. It does not replace audits or pair-by-pair canaries.

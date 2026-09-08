@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node", "vite/client"]
+  },
+  "include": ["src", "../web/src/api.ts", "../web/src/identity.ts", "../web/src/starknet.ts", "../web/src/starkscanProofProvider.ts"]
+}

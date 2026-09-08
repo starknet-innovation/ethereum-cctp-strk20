@@ -9,8 +9,10 @@ import type {
 } from '@privacy-round-trip/shared'
 
 const API =
-  (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ??
-  (import.meta.env.DEV ? 'http://localhost:8787' : '')
+  (import.meta.env?.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ??
+  (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+    ?.CANARY_API_URL?.replace(/\/$/, '') ??
+  (import.meta.env?.DEV ? 'http://localhost:8787' : '')
 
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
@@ -36,6 +38,8 @@ export const api = {
     starknetAccount: string
     delayMinutes: number
   }) => json<CreateFlowResponse>('/v1/flows', { method: 'POST', body: JSON.stringify(body) }),
+  getFlow: (id: string, token: string) =>
+    json<PublicFlow>(`/v1/flows/${id}`, { headers: { 'x-flow-token': token } }),
   updateFlow: (id: string, token: string, update: FlowUpdate) =>
     json<PublicFlow>(`/v1/flows/${id}`, {
       method: 'PATCH',

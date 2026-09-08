@@ -11,3 +11,4 @@ target/
 *.tsbuildinfo
 .DS_Store
 .elasticache/
+.canary/
