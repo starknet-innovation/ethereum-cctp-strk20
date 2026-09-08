@@ -73,6 +73,20 @@ describe('api', () => {
       payload: { phase: 'privacy-delay' },
     })
     expect(skipped.statusCode).toBe(409)
+
+    for (const [phase, txHash] of [
+      ['entry-submitted', `0x${'44'.repeat(32)}`],
+      ['bridging-to-starknet', undefined],
+      ['starknet-funded', '0x123abc'],
+    ] as const) {
+      const transition = await app.inject({
+        method: 'PATCH',
+        url: `/v1/flows/${created.flow.id}`,
+        headers: { 'x-flow-token': created.writeToken },
+        payload: { phase, ...(txHash ? { txHash } : {}) },
+      })
+      expect(transition.statusCode).toBe(200)
+    }
     await app.close()
   })
 

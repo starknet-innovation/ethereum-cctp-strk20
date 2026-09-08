@@ -6,7 +6,11 @@ export type TokenSymbol = z.infer<typeof tokenSymbolSchema>
 
 export const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'Invalid Ethereum address')
 export const feltSchema = z.string().regex(/^0x[0-9a-fA-F]{1,64}$/, 'Invalid Starknet felt')
-export const hashSchema = z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'Invalid transaction hash')
+// Flow transitions carry both 32-byte Ethereum hashes and Starknet field-element hashes. Starknet
+// RPCs canonically omit leading zeroes, so requiring exactly 64 hex digits rejects valid results.
+export const hashSchema = z
+  .string()
+  .regex(/^0x[0-9a-fA-F]{1,64}$/, 'Invalid cross-chain transaction hash')
 
 export const quoteRequestSchema = z
   .object({
