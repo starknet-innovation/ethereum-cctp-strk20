@@ -461,6 +461,9 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
           },
           getBalance: () => publicClient.getBalance({ address: account.address }),
           emitMetric,
+          // Deploying the immutable settlement bytecode costs ~898k gas on mainnet before the
+          // standard 25% margin. Only this schema-checked factory call receives the higher cap.
+          maxGasPerTransaction: config.RELAYER_MAX_FACTORY_CREATE_GAS,
         })
         let txHash: Hex
         try {

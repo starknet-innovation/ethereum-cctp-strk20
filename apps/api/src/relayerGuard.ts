@@ -33,6 +33,7 @@ export async function reserveRelayerSpend(args: {
   estimateMaxFeePerGas: () => Promise<bigint>
   getBalance: () => Promise<bigint>
   emitMetric: (name: RelayerMetric, value: number, details?: Record<string, string | number>) => void
+  maxGasPerTransaction?: bigint
   now?: Date
 }): Promise<RelayerReservation> {
   if (!args.config.RELAYER_ENABLED) {
@@ -41,11 +42,13 @@ export async function reserveRelayerSpend(args: {
 
   const estimatedGas = await args.estimateGas()
   const gasLimit = applyBasisPoints(estimatedGas, args.config.RELAYER_GAS_LIMIT_MULTIPLIER_BPS)
-  if (gasLimit > args.config.RELAYER_MAX_GAS_PER_TRANSACTION) {
+  const maxGasPerTransaction =
+    args.maxGasPerTransaction ?? args.config.RELAYER_MAX_GAS_PER_TRANSACTION
+  if (gasLimit > maxGasPerTransaction) {
     throw new RelayerGuardError(
       'gas-limit',
       503,
-      'Estimated transaction gas exceeds the relayer safety limit',
+      `Estimated transaction gas limit ${gasLimit} exceeds the relayer safety limit ${maxGasPerTransaction}`,
     )
   }
 

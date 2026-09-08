@@ -43,7 +43,8 @@ API stdout and stderr are sent to `/ecs/ethereum-cctp-strk20-api` with 30-day re
 ## Relayer safeguards
 
 The Ethereum relayer is enabled through the `RelayerEnabled` CloudFormation parameter. Each
-transaction is simulated, estimated with a 25% gas-limit margin, and rejected above 800,000 gas.
+transaction is simulated and estimated with a 25% gas-limit margin. The schema-checked factory
+`create` call is capped at 1,300,000 gas; every other relayed transaction remains capped at 800,000.
 Before signing, the API requires the relayer to preserve a 0.002 ETH reserve and atomically reserves
 the transaction's maximum EIP-1559 cost against a 0.005 ETH-equivalent daily budget in Valkey. A
 reserved amount is deliberately not released after a submission error because the transaction may

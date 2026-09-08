@@ -27,6 +27,7 @@ const schema = z.object({
     .default(5_000_000),
   RELAYER_MIN_BALANCE_WEI: z.coerce.bigint().nonnegative().default(2_000_000_000_000_000n),
   RELAYER_MAX_GAS_PER_TRANSACTION: z.coerce.bigint().positive().default(800_000n),
+  RELAYER_MAX_FACTORY_CREATE_GAS: z.coerce.bigint().positive().default(1_300_000n),
   RELAYER_GAS_LIMIT_MULTIPLIER_BPS: z.coerce
     .number()
     .int()

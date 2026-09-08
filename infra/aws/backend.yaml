@@ -342,6 +342,8 @@ Resources:
             Value: '2000000000000000'
           - Name: RELAYER_MAX_GAS_PER_TRANSACTION
             Value: '800000'
+          - Name: RELAYER_MAX_FACTORY_CREATE_GAS
+            Value: '1300000'
           - Name: RELAYER_GAS_LIMIT_MULTIPLIER_BPS
             Value: '12500'
           # Public, immutable deployment addresses live outside the retained runtime secret so
