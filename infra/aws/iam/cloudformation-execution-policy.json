@@ -113,6 +113,19 @@
       "Resource": "*"
     },
     {
+      "Sid": "ProjectRelayerAlarms",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:DeleteAlarms",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:ListTagsForResource",
+        "cloudwatch:PutMetricAlarm",
+        "cloudwatch:TagResource",
+        "cloudwatch:UntagResource"
+      ],
+      "Resource": "arn:aws:cloudwatch:eu-west-3:905846953990:alarm:ethereum-cctp-strk20-relayer-*"
+    },
+    {
       "Sid": "ProjectEcsExpress",
       "Effect": "Allow",
       "Action": [

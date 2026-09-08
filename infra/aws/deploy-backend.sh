@@ -8,6 +8,7 @@ set -Eeuo pipefail
 
 template_file="${TEMPLATE_FILE:-infra/aws/backend.yaml}"
 change_set_name="${CHANGE_SET_NAME:-deploy-${IMAGE_TAG:0:12}}"
+relayer_enabled_override="${RELAYER_ENABLED_OVERRIDE:-unchanged}"
 
 if grep -nE '^[[:space:]]+Value:[[:space:]]+0x[[:xdigit:]]+[[:space:]]*$' "$template_file"; then
   echo "Hexadecimal environment values must be quoted so YAML preserves them as strings." >&2
@@ -17,6 +18,27 @@ fi
 aws cloudformation validate-template \
   --region "$AWS_REGION" \
   --template-body "file://$template_file" >/dev/null
+
+case "$relayer_enabled_override" in
+  true|false)
+    relayer_parameter="ParameterKey=RelayerEnabled,ParameterValue=$relayer_enabled_override"
+    ;;
+  unchanged)
+    if aws cloudformation describe-stacks \
+      --region "$AWS_REGION" \
+      --stack-name "$STACK_NAME" \
+      --query 'Stacks[0].Parameters[?ParameterKey==`RelayerEnabled`].ParameterValue | [0]' \
+      --output text | grep -qE '^(true|false)$'; then
+      relayer_parameter='ParameterKey=RelayerEnabled,UsePreviousValue=true'
+    else
+      relayer_parameter='ParameterKey=RelayerEnabled,ParameterValue=true'
+    fi
+    ;;
+  *)
+    echo "RELAYER_ENABLED_OVERRIDE must be unchanged, true, or false." >&2
+    exit 1
+    ;;
+esac
 
 aws cloudformation create-change-set \
   --region "$AWS_REGION" \
@@ -29,6 +51,7 @@ aws cloudformation create-change-set \
   --parameters \
     ParameterKey=DeployService,ParameterValue=true \
     ParameterKey=ImageTag,ParameterValue="$IMAGE_TAG" \
+    "$relayer_parameter" \
     ParameterKey=VpcId,UsePreviousValue=true \
     ParameterKey=VpcCidr,UsePreviousValue=true \
     ParameterKey=SubnetA,UsePreviousValue=true \

@@ -40,6 +40,25 @@ ElastiCache Serverless runs Valkey with TLS, password RBAC, a 1 GB storage cap, 
 
 API stdout and stderr are sent to `/ecs/ethereum-cctp-strk20-api` with 30-day retention.
 
+## Relayer safeguards
+
+The Ethereum relayer is enabled through the `RelayerEnabled` CloudFormation parameter. Each
+transaction is simulated, estimated with a 25% gas-limit margin, and rejected above 800,000 gas.
+Before signing, the API requires the relayer to preserve a 0.002 ETH reserve and atomically reserves
+the transaction's maximum EIP-1559 cost against a 0.005 ETH-equivalent daily budget in Valkey. A
+reserved amount is deliberately not released after a submission error because the transaction may
+have reached Ethereum even if the RPC response was lost. Creation is limited to three requests per
+ten minutes per client IP; settlement is limited to six.
+
+CloudWatch receives embedded metrics for relayer balance, budget rejection, accepted submissions,
+and ambiguous submission failures. The stack creates alarms for low balance, exhausted daily budget,
+and ambiguous delivery. These alarms are visible in CloudWatch but have no notification action until
+an operator-owned SNS topic or incident destination is attached.
+
+For an emergency stop, dispatch the `Deploy backend` GitHub workflow with `relayer_enabled` set to
+`false`. Normal pushes preserve the current switch value. Re-enable it only after the condition has
+been investigated.
+
 ## API service
 
 The stack creates a dedicated ECS cluster, then ECS Express Mode runs exactly one 0.25 vCPU / 512 MiB task for the POC. Its ALB health check uses `/v1/health/live`, while `/v1/health/ready` remains unavailable until all mainnet runtime values are configured.

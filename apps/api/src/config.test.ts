@@ -12,12 +12,14 @@ describe('runtime configuration', () => {
         PROVER_URL: 'https://ignored-legacy.example',
       }),
       ETHEREUM_RPC_URL: 'https://explicit-rpc.example',
+      RELAYER_ENABLED: 'false',
     })
 
     expect(config.ETHEREUM_RPC_URL).toBe('https://explicit-rpc.example')
     expect(config.STARKNET_RPC_URL).toBe('https://starknet.example')
     expect(config.STARKSCAN_API_KEY).toBe('operator-issued-key')
     expect(config.AVNU_PAYMASTER_API_KEY).toBe('avnu-operator-key')
+    expect(config.RELAYER_ENABLED).toBe(false)
     expect(config).not.toHaveProperty('PROVER_URL')
   })
 
@@ -25,5 +27,10 @@ describe('runtime configuration', () => {
     expect(() => loadConfig({ RUNTIME_CONFIG: 'not-json' })).toThrow(
       'RUNTIME_CONFIG must contain a JSON object',
     )
+  })
+
+  it('does not treat the string false as an enabled relayer', () => {
+    expect(loadConfig({ RELAYER_ENABLED: 'false' }).RELAYER_ENABLED).toBe(false)
+    expect(loadConfig({ RELAYER_ENABLED: 'true' }).RELAYER_ENABLED).toBe(true)
   })
 })

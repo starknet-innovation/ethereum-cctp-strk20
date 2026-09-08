@@ -11,6 +11,7 @@ Metadata:
         Parameters:
           - DeployService
           - ImageTag
+          - RelayerEnabled
       - Label:
           default: Project network
         Parameters:
@@ -35,6 +36,11 @@ Parameters:
     Type: String
     Default: bootstrap
     AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+  RelayerEnabled:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Emergency operational switch for all Ethereum relayer submissions.
   VpcId:
     Type: AWS::EC2::VPC::Id
     Default: vpc-0b229ad67389eacf0
@@ -328,6 +334,16 @@ Resources:
             Value: https://ethereum-cctp-strk20.vercel.app
           - Name: ESTIMATED_STARKNET_FEES_USDC
             Value: '2'
+          - Name: RELAYER_ENABLED
+            Value: !Ref RelayerEnabled
+          - Name: RELAYER_DAILY_SPEND_LIMIT_GWEI
+            Value: '5000000'
+          - Name: RELAYER_MIN_BALANCE_WEI
+            Value: '2000000000000000'
+          - Name: RELAYER_MAX_GAS_PER_TRANSACTION
+            Value: '800000'
+          - Name: RELAYER_GAS_LIMIT_MULTIPLIER_BPS
+            Value: '12500'
           # Public, immutable deployment addresses live outside the retained runtime secret so
           # normal GitHub deployments can update them without reading or rotating secret values.
           - Name: ETHEREUM_ENTRY_ROUTER
@@ -365,6 +381,75 @@ Resources:
         - Key: Environment
           Value: mainnet-poc
 
+  RelayerLowBalanceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: DeployApi
+    Metadata:
+      ContextRef: infra/aws/README.md#relayer-safeguards
+    Properties:
+      AlarmName: ethereum-cctp-strk20-relayer-low-balance
+      AlarmDescription: The relayer cannot cover a transaction while preserving its protected balance reserve.
+      Namespace: EthereumCctpStrk20
+      MetricName: RelayerLowBalance
+      Dimensions:
+        - Name: Service
+          Value: api
+        - Name: Environment
+          Value: mainnet-poc
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: ignore
+
+  RelayerBudgetAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: DeployApi
+    Metadata:
+      ContextRef: infra/aws/README.md#relayer-safeguards
+    Properties:
+      AlarmName: ethereum-cctp-strk20-relayer-daily-budget
+      AlarmDescription: The relayer rejected a transaction because its conservative daily gas-spend budget was exhausted.
+      Namespace: EthereumCctpStrk20
+      MetricName: RelayerBudgetExceeded
+      Dimensions:
+        - Name: Service
+          Value: api
+        - Name: Environment
+          Value: mainnet-poc
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: ignore
+
+  RelayerSubmissionUnknownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: DeployApi
+    Metadata:
+      ContextRef: infra/aws/README.md#relayer-safeguards
+    Properties:
+      AlarmName: ethereum-cctp-strk20-relayer-unknown-delivery
+      AlarmDescription: Ethereum transaction submission returned an error after budget reservation; delivery may be unknown.
+      Namespace: EthereumCctpStrk20
+      MetricName: RelayerSubmissionUnknown
+      Dimensions:
+        - Name: Service
+          Value: api
+        - Name: Environment
+          Value: mainnet-poc
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
 Outputs:
   RepositoryUri:
     Description: Immutable API image repository.
@@ -379,3 +464,7 @@ Outputs:
     Condition: DeployApi
     Description: Managed HTTPS endpoint for Vercel.
     Value: !GetAtt ApiService.Endpoint
+  RelayerSafetyAlarms:
+    Condition: DeployApi
+    Description: CloudWatch alarms for relayer balance, daily budget, and ambiguous submission failures.
+    Value: !Join [',', [!Ref RelayerLowBalanceAlarm, !Ref RelayerBudgetAlarm, !Ref RelayerSubmissionUnknownAlarm]]

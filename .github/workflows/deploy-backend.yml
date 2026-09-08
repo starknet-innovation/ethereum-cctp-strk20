@@ -16,6 +16,16 @@ on:
       - tsconfig.base.json
       - vendor/**
   workflow_dispatch:
+    inputs:
+      relayer_enabled:
+        description: Emergency relayer switch; normal deployments preserve its current value
+        required: true
+        default: unchanged
+        type: choice
+        options:
+          - unchanged
+          - 'false'
+          - 'true'
 
 permissions:
   contents: read
@@ -107,4 +117,5 @@ jobs:
         env:
           IMAGE_TAG: ${{ github.sha }}
           CHANGE_SET_NAME: github-${{ github.run_id }}-${{ github.run_attempt }}
+          RELAYER_ENABLED_OVERRIDE: ${{ inputs.relayer_enabled }}
         run: bash infra/aws/deploy-backend.sh

@@ -3,6 +3,7 @@ import { Cluster } from 'iovalkey'
 export interface StateStore {
   get(key: string): Promise<string | undefined>
   set(key: string, value: string, ttlSeconds: number): Promise<void>
+  reserveCounter(key: string, amount: number, limit: number, ttlSeconds: number): Promise<number | undefined>
   ping(): Promise<void>
   close(): Promise<void>
 }
@@ -27,6 +28,20 @@ export class MemoryStateStore implements StateStore {
 
   async set(key: string, value: string, ttlSeconds: number): Promise<void> {
     this.values.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1_000 })
+  }
+
+  async reserveCounter(
+    key: string,
+    amount: number,
+    limit: number,
+    ttlSeconds: number,
+  ): Promise<number | undefined> {
+    const stored = this.values.get(key)
+    const current = !stored || stored.expiresAt <= Date.now() ? 0 : Number(stored.value)
+    if (current + amount > limit) return undefined
+    const next = current + amount
+    this.values.set(key, { value: String(next), expiresAt: Date.now() + ttlSeconds * 1_000 })
+    return next
   }
 
   async ping(): Promise<void> {}
@@ -67,6 +82,33 @@ export class ValkeyStateStore implements StateStore {
   async set(key: string, value: string, ttlSeconds: number): Promise<void> {
     await this.connect()
     await this.client.set(key, value, 'EX', ttlSeconds)
+  }
+
+  async reserveCounter(
+    key: string,
+    amount: number,
+    limit: number,
+    ttlSeconds: number,
+  ): Promise<number | undefined> {
+    await this.connect()
+    const result = await this.client.eval(
+      [
+        "local current = tonumber(redis.call('GET', KEYS[1]) or '0')",
+        'local amount = tonumber(ARGV[1])',
+        'local limit = tonumber(ARGV[2])',
+        'if current + amount > limit then return -1 end',
+        "local next = redis.call('INCRBY', KEYS[1], ARGV[1])",
+        'if next == amount then redis.call(\'EXPIRE\', KEYS[1], ARGV[3]) end',
+        'return next',
+      ].join('\n'),
+      1,
+      key,
+      String(amount),
+      String(limit),
+      String(ttlSeconds),
+    )
+    const next = Number(result)
+    return next < 0 ? undefined : next
   }
 
   async ping(): Promise<void> {

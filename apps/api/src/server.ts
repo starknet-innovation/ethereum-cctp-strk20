@@ -27,6 +27,12 @@ import { readiness } from './config.js'
 import { FlowStore } from './flowStore.js'
 import { liveQuoteDependencies, QuoteService, type QuoteDependencies } from './quote.js'
 import { MemoryStateStore, ValkeyStateStore, type StateStore } from './stateStore.js'
+import {
+  RelayerGuardError,
+  relayerMetricEvent,
+  reserveRelayerSpend,
+  type RelayerMetric,
+} from './relayerGuard.js'
 
 const hashParam = z.object({ txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/) })
 const settlementRequest = z
@@ -189,6 +195,7 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
       )
     : undefined
   const fetchImpl = overrides.fetchImpl ?? fetch
+  let relayerSubmissionActive = false
 
   app.addHook('onClose', async () => stateStore.close())
 
@@ -382,76 +389,178 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
   // This endpoint deliberately does not accept a flow id and does not persist the request. The
   // backend sees the recipient transiently while sponsoring deployment, but cannot join it to a
   // stored entry record through this API.
-  app.post('/v1/settlements', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => {
-    const parsed = settlementRequest.safeParse(request.body)
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() })
-    if (
-      !config.ETHEREUM_RPC_URL ||
-      !config.ETHEREUM_RELAYER_PRIVATE_KEY ||
-      !config.ETHEREUM_EXIT_SETTLEMENT_FACTORY
-    ) {
-      return reply.code(503).send({ error: 'Ethereum settlement relayer is not configured' })
-    }
-    const outputAsset = { ETH: 0, USDC: 1, WBTC: 2 }[parsed.data.outputToken]
-    const args = [
-      parsed.data.salt as Hex,
-      parsed.data.recipient as Address,
-      outputAsset,
-      BigInt(parsed.data.minimumOutput),
-      parsed.data.poolFee,
-      BigInt(parsed.data.recoverAfter),
-    ] as const
-    try {
-      const publicClient = createPublicClient({ chain: mainnet, transport: http(config.ETHEREUM_RPC_URL) })
-      const account = privateKeyToAccount(config.ETHEREUM_RELAYER_PRIVATE_KEY as Hex)
-      const wallet = createWalletClient({ account, chain: mainnet, transport: http(config.ETHEREUM_RPC_URL) })
-      const factory = config.ETHEREUM_EXIT_SETTLEMENT_FACTORY as Address
-      const settlement = await publicClient.readContract({
-        address: factory,
-        abi: SETTLEMENT_FACTORY_ABI,
-        functionName: 'predict',
-        args,
-      })
-      const { request: transaction } = await publicClient.simulateContract({
-        account,
-        address: factory,
-        abi: SETTLEMENT_FACTORY_ABI,
-        functionName: 'create',
-        args,
-      })
-      const txHash = await wallet.writeContract(transaction)
-      return reply.code(202).send({ settlement, txHash })
-    } catch (error) {
-      return reply.code(502).send({ error: safeError(error) })
-    }
-  })
+  app.post(
+    '/v1/settlements',
+    { config: { rateLimit: { max: 3, timeWindow: '10 minutes' } } },
+    async (request, reply) => {
+      const parsed = settlementRequest.safeParse(request.body)
+      if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() })
+      if (
+        !config.ETHEREUM_RPC_URL ||
+        !config.ETHEREUM_RELAYER_PRIVATE_KEY ||
+        !config.ETHEREUM_EXIT_SETTLEMENT_FACTORY
+      ) {
+        return reply.code(503).send({ error: 'Ethereum settlement relayer is not configured' })
+      }
+      if (!config.RELAYER_ENABLED) {
+        return reply.code(503).send({ error: 'Ethereum settlement relayer is disabled' })
+      }
+      if (relayerSubmissionActive) {
+        return reply.code(429).send({ error: 'Ethereum settlement relayer is busy; retry shortly' })
+      }
+      relayerSubmissionActive = true
+      const outputAsset = { ETH: 0, USDC: 1, WBTC: 2 }[parsed.data.outputToken]
+      const args = [
+        parsed.data.salt as Hex,
+        parsed.data.recipient as Address,
+        outputAsset,
+        BigInt(parsed.data.minimumOutput),
+        parsed.data.poolFee,
+        BigInt(parsed.data.recoverAfter),
+      ] as const
+      try {
+        const publicClient = createPublicClient({
+          chain: mainnet,
+          transport: http(config.ETHEREUM_RPC_URL),
+        })
+        const account = privateKeyToAccount(config.ETHEREUM_RELAYER_PRIVATE_KEY as Hex)
+        const wallet = createWalletClient({
+          account,
+          chain: mainnet,
+          transport: http(config.ETHEREUM_RPC_URL),
+        })
+        const factory = config.ETHEREUM_EXIT_SETTLEMENT_FACTORY as Address
+        const settlement = await publicClient.readContract({
+          address: factory,
+          abi: SETTLEMENT_FACTORY_ABI,
+          functionName: 'predict',
+          args,
+        })
+        const { request: transaction } = await publicClient.simulateContract({
+          account,
+          address: factory,
+          abi: SETTLEMENT_FACTORY_ABI,
+          functionName: 'create',
+          args,
+        })
+        const emitMetric = metricEmitter(request)
+        const reservation = await reserveRelayerSpend({
+          config,
+          stateStore,
+          estimateGas: () =>
+            publicClient.estimateContractGas({
+              account,
+              address: factory,
+              abi: SETTLEMENT_FACTORY_ABI,
+              functionName: 'create',
+              args,
+            }),
+          estimateMaxFeePerGas: async () => {
+            const fees = await publicClient.estimateFeesPerGas()
+            return fees.maxFeePerGas
+          },
+          getBalance: () => publicClient.getBalance({ address: account.address }),
+          emitMetric,
+        })
+        let txHash: Hex
+        try {
+          txHash = await wallet.writeContract({ ...transaction, gas: reservation.gasLimit })
+        } catch (error) {
+          emitMetric('RelayerSubmissionUnknown', 1, { operation: 'create-settlement' })
+          throw error
+        }
+        emitMetric('RelayerSubmissionAccepted', 1, {
+          operation: 'create-settlement',
+          reservedGwei: reservation.maxCostGwei,
+          dailyBudgetUsedGwei: reservation.budgetUsedGwei,
+        })
+        return reply.code(202).send({ settlement, txHash })
+      } catch (error) {
+        if (error instanceof RelayerGuardError) {
+          return reply.code(error.statusCode).send({ error: error.message })
+        }
+        return reply.code(502).send({ error: safeError(error) })
+      } finally {
+        relayerSubmissionActive = false
+      }
+    },
+  )
 
   // Settlement is permissionless. Relaying it avoids a third wallet prompt and is intentionally
   // stateless: the request contains only the already-public settlement address.
   app.post<{ Params: { address: string } }>(
     '/v1/settlements/:address/settle',
-    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    { config: { rateLimit: { max: 6, timeWindow: '10 minutes' } } },
     async (request, reply) => {
-    const parsed = settlementParam.safeParse(request.params)
-    if (!parsed.success) return reply.code(400).send({ error: 'Invalid settlement address' })
-    if (!config.ETHEREUM_RPC_URL || !config.ETHEREUM_RELAYER_PRIVATE_KEY) {
-      return reply.code(503).send({ error: 'Ethereum settlement relayer is not configured' })
-    }
-    try {
-      const publicClient = createPublicClient({ chain: mainnet, transport: http(config.ETHEREUM_RPC_URL) })
-      const account = privateKeyToAccount(config.ETHEREUM_RELAYER_PRIVATE_KEY as Hex)
-      const wallet = createWalletClient({ account, chain: mainnet, transport: http(config.ETHEREUM_RPC_URL) })
-      const { request: transaction } = await publicClient.simulateContract({
-        account,
-        address: parsed.data.address as Address,
-        abi: EXIT_SETTLEMENT_ABI,
-        functionName: 'settle',
-      })
-      const txHash = await wallet.writeContract(transaction)
-      return reply.code(202).send({ txHash })
-    } catch (error) {
-      return reply.code(502).send({ error: safeError(error) })
-    }
+      const parsed = settlementParam.safeParse(request.params)
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid settlement address' })
+      if (!config.ETHEREUM_RPC_URL || !config.ETHEREUM_RELAYER_PRIVATE_KEY) {
+        return reply.code(503).send({ error: 'Ethereum settlement relayer is not configured' })
+      }
+      if (!config.RELAYER_ENABLED) {
+        return reply.code(503).send({ error: 'Ethereum settlement relayer is disabled' })
+      }
+      if (relayerSubmissionActive) {
+        return reply.code(429).send({ error: 'Ethereum settlement relayer is busy; retry shortly' })
+      }
+      relayerSubmissionActive = true
+      try {
+        const publicClient = createPublicClient({
+          chain: mainnet,
+          transport: http(config.ETHEREUM_RPC_URL),
+        })
+        const account = privateKeyToAccount(config.ETHEREUM_RELAYER_PRIVATE_KEY as Hex)
+        const wallet = createWalletClient({
+          account,
+          chain: mainnet,
+          transport: http(config.ETHEREUM_RPC_URL),
+        })
+        const settlement = parsed.data.address as Address
+        const { request: transaction } = await publicClient.simulateContract({
+          account,
+          address: settlement,
+          abi: EXIT_SETTLEMENT_ABI,
+          functionName: 'settle',
+        })
+        const emitMetric = metricEmitter(request)
+        const reservation = await reserveRelayerSpend({
+          config,
+          stateStore,
+          estimateGas: () =>
+            publicClient.estimateContractGas({
+              account,
+              address: settlement,
+              abi: EXIT_SETTLEMENT_ABI,
+              functionName: 'settle',
+            }),
+          estimateMaxFeePerGas: async () => {
+            const fees = await publicClient.estimateFeesPerGas()
+            return fees.maxFeePerGas
+          },
+          getBalance: () => publicClient.getBalance({ address: account.address }),
+          emitMetric,
+        })
+        let txHash: Hex
+        try {
+          txHash = await wallet.writeContract({ ...transaction, gas: reservation.gasLimit })
+        } catch (error) {
+          emitMetric('RelayerSubmissionUnknown', 1, { operation: 'settle' })
+          throw error
+        }
+        emitMetric('RelayerSubmissionAccepted', 1, {
+          operation: 'settle',
+          reservedGwei: reservation.maxCostGwei,
+          dailyBudgetUsedGwei: reservation.budgetUsedGwei,
+        })
+        return reply.code(202).send({ txHash })
+      } catch (error) {
+        if (error instanceof RelayerGuardError) {
+          return reply.code(error.statusCode).send({ error: error.message })
+        }
+        return reply.code(502).send({ error: safeError(error) })
+      } finally {
+        relayerSubmissionActive = false
+      }
     },
   )
 
@@ -726,4 +835,12 @@ function flowToken(value: string | string[] | undefined): string | undefined {
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error'
+}
+
+function metricEmitter(request: FastifyRequest) {
+  return (
+    name: RelayerMetric,
+    value: number,
+    details?: Record<string, string | number>,
+  ) => request.log.info(relayerMetricEvent(name, value, details))
 }

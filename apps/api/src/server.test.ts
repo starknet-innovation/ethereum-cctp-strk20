@@ -18,6 +18,11 @@ const config: ApiConfig = {
   ETHEREUM_EXIT_SETTLEMENT_FACTORY: '0x2222222222222222222222222222222222222222',
   STARKNET_CCTP_EXIT_ANONYMIZER: '0x123',
   ETHEREUM_RELAYER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
+  RELAYER_ENABLED: true,
+  RELAYER_DAILY_SPEND_LIMIT_GWEI: 5_000_000,
+  RELAYER_MIN_BALANCE_WEI: 2_000_000_000_000_000n,
+  RELAYER_MAX_GAS_PER_TRANSACTION: 800_000n,
+  RELAYER_GAS_LIMIT_MULTIPLIER_BPS: 12_500,
   FLOW_TOKEN_SECRET: 'x'.repeat(32),
   STATE_CACHE_PORT: 6379,
   ESTIMATED_STARKNET_FEES_USDC: 2,
@@ -76,6 +81,11 @@ describe('api', () => {
       HOST: '127.0.0.1',
       PORT: 8787,
       CORS_ORIGIN: 'http://localhost:5173',
+      RELAYER_ENABLED: false,
+      RELAYER_DAILY_SPEND_LIMIT_GWEI: 5_000_000,
+      RELAYER_MIN_BALANCE_WEI: 2_000_000_000_000_000n,
+      RELAYER_MAX_GAS_PER_TRANSACTION: 800_000n,
+      RELAYER_GAS_LIMIT_MULTIPLIER_BPS: 12_500,
       STATE_CACHE_PORT: 6379,
       ESTIMATED_STARKNET_FEES_USDC: 2,
     })
@@ -84,6 +94,28 @@ describe('api', () => {
     expect(response.json().missing).toContain('ETHEREUM_ENTRY_ROUTER')
     expect(response.json().missing).toContain('STARKSCAN_API_KEY')
     expect(response.json().missing).toContain('AVNU_PAYMASTER_API_KEY')
+    await app.close()
+  })
+
+  it('fails closed when the Ethereum relayer switch is disabled', async () => {
+    const app = await buildServer(
+      { ...config, RELAYER_ENABLED: false },
+      { quoteDependencies: dependencies },
+    )
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/settlements',
+      payload: {
+        salt: `0x${'22'.repeat(32)}`,
+        recipient: '0x3333333333333333333333333333333333333333',
+        outputToken: 'USDC',
+        minimumOutput: '1',
+        poolFee: 500,
+        recoverAfter: 1,
+      },
+    })
+    expect(response.statusCode).toBe(503)
+    expect(response.json()).toEqual({ error: 'Ethereum settlement relayer is disabled' })
     await app.close()
   })
 
