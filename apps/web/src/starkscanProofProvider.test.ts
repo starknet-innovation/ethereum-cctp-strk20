@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ProofInvocation } from '@starkware-libs/starknet-privacy-sdk'
 import { StarkscanProofProvider } from './starkscanProofProvider.js'
 
 describe('StarkscanProofProvider', () => {
+  afterEach(() => vi.useRealTimers())
+
   it('submits an explicit block and preserves the complete proof response', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
     const fetchImpl: typeof fetch = async (input, init) => {
@@ -103,6 +105,45 @@ describe('StarkscanProofProvider', () => {
     await expect(provider.prove(invocation, 12_446_898)).resolves.toMatchObject({
       data: 'proof-data',
     })
+  })
+
+  it('honors Retry-After and retries a throttled proof submission', async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1
+      if (calls === 1) {
+        return new Response('{}', {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '1' },
+        })
+      }
+      return new Response(
+        JSON.stringify({
+          jobId: 'prv_9f2c1ab34de56789012345ad',
+          status: 'succeeded',
+          terminal: true,
+          pollToken: 'c'.repeat(64),
+          result: { proof: 'proof-after-backoff', proof_facts: [], l2_to_l1_messages: [] },
+        }),
+        { status: 202, headers: { 'content-type': 'application/json' } },
+      )
+    }
+    const provider = new StarkscanProofProvider({
+      apiBaseUrl: 'https://api.example',
+      rpcUrl: 'https://rpc.example',
+      poolAddress: '0x123',
+      fetchImpl,
+    })
+    const proofPromise = provider.prove(
+      { type: 'INVOKE', sender_address: '0x123', calldata: [] } as unknown as ProofInvocation,
+      12_446_898,
+    )
+
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    await expect(proofPromise).resolves.toMatchObject({ data: 'proof-after-backoff' })
+    expect(calls).toBe(2)
   })
 
   it('fails closed without an explicit block number', async () => {

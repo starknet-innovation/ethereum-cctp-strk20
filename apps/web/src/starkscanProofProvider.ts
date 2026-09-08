@@ -12,6 +12,7 @@ import { constants } from 'starknet'
 const PROOF_TIMEOUT_MS = 30 * 60_000
 const DEFAULT_POLL_SECONDS = 10
 const MIN_ATTESTATION_MARGIN_SECONDS = 60
+const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504])
 
 export class StarkscanProofProvider implements ProofProviderInterface {
   private readonly defaults: ProvingServiceProofProvider
@@ -78,15 +79,18 @@ export class StarkscanProofProvider implements ProofProviderInterface {
         })
         if (response.ok) return parseSubmission(await response.json())
         const error = await responseError(response)
-        if (![502, 503, 504].includes(response.status) || attempt === 3) throw error
+        if (!RETRYABLE_HTTP_STATUSES.has(response.status) || attempt === 3) throw error
         lastError = error
       } catch (error) {
         lastError = error
-        if (attempt === 3 || (error instanceof HttpError && ![502, 503, 504].includes(error.status))) {
+        if (
+          attempt === 3 ||
+          (error instanceof HttpError && !RETRYABLE_HTTP_STATUSES.has(error.status))
+        ) {
           throw error
         }
       }
-      await sleep(Math.min(1_000 * 2 ** attempt, 8_000))
+      await sleep(retryDelayMs(lastError, Math.min(1_000 * 2 ** attempt, 8_000)))
     }
     throw lastError
   }
@@ -108,15 +112,19 @@ export class StarkscanProofProvider implements ProofProviderInterface {
         if (!response.ok) throw await responseError(response)
         return { ...parseJob(await response.json()), pollToken }
       } catch (error) {
-        if (error instanceof HttpError && ![502, 503, 504].includes(error.status)) throw error
-        await sleep(DEFAULT_POLL_SECONDS * 1_000)
+        if (error instanceof HttpError && !RETRYABLE_HTTP_STATUSES.has(error.status)) throw error
+        await sleep(retryDelayMs(error, DEFAULT_POLL_SECONDS * 1_000))
       }
     }
   }
 }
 
 class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly retryAfterMs?: number,
+  ) {
     super(message)
   }
 }
@@ -193,7 +201,22 @@ function proofJobError(job: ProofRelayJob): Error {
 async function responseError(response: Response): Promise<HttpError> {
   const body = (await response.json().catch(() => undefined)) as { error?: unknown } | undefined
   const message = typeof body?.error === 'string' ? body.error : `Proof API returned HTTP ${response.status}`
-  return new HttpError(response.status, message)
+  return new HttpError(response.status, message, parseRetryAfterMs(response.headers.get('retry-after')))
+}
+
+function retryDelayMs(error: unknown, fallbackMs: number): number {
+  return error instanceof HttpError && error.retryAfterMs !== undefined
+    ? error.retryAfterMs
+    : fallbackMs
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, 60_000)
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return undefined
+  return Math.min(Math.max(0, timestamp - Date.now()), 60_000)
 }
 
 function pollDelayMs(value: number | undefined): number {
