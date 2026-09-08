@@ -153,3 +153,104 @@ contract PrivacyRoundTripEvmTest {
         require(wbtc.balanceOf(recipient) == 2_000);
     }
 }
+
+interface Vm {
+    function expectRevert(bytes4) external;
+    function expectRevert(bytes calldata) external;
+    function prank(address) external;
+    function warp(uint256) external;
+    function deal(address, uint256) external;
+}
+
+contract ExitSettlementSafetyTest {
+    Vm constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+    MockToken usdc = new MockToken();
+    MockToken wbtc = new MockToken();
+    MockWeth weth = new MockWeth();
+    MockSwapRouter swap = new MockSwapRouter();
+    ExitSettlementFactory factory = new ExitSettlementFactory(address(usdc), address(wbtc), address(weth), address(swap));
+    address recipient = address(0xBEEF);
+    address griefer = address(0xBAD);
+
+    function testPredictMatchesCreate() public {
+        bytes32 salt = keccak256("predict");
+        uint64 recoverAfter = uint64(block.timestamp + 1 hours);
+        address predicted = factory.predict(salt, payable(recipient), ExitSettlement.OutputAsset.ETH, 123, 500, recoverAfter);
+        address created = factory.create(salt, payable(recipient), ExitSettlement.OutputAsset.ETH, 123, 500, recoverAfter);
+        require(predicted == created, "predict != create");
+    }
+
+    /// A dust deposit plus an early settle() must not lock the real CCTP mint that lands afterwards.
+    function testDustSettleDoesNotLockLaterMint() public {
+        address settlement = factory.create(
+            keccak256("usdc-out"), payable(recipient), ExitSettlement.OutputAsset.USDC, 0, 0, uint64(block.timestamp + 1 hours)
+        );
+        usdc.mint(settlement, 1);
+        vm.prank(griefer);
+        ExitSettlement(payable(settlement)).settle();
+        require(usdc.balanceOf(recipient) == 1, "dust forwarded");
+
+        usdc.mint(settlement, 10_000_000_000);
+        ExitSettlement(payable(settlement)).settle();
+        require(usdc.balanceOf(recipient) == 10_000_000_001, "real mint paid out");
+        require(usdc.balanceOf(settlement) == 0, "nothing stranded");
+    }
+
+    /// Same for the recovery path on a swap-output settlement.
+    function testDustRecoveryDoesNotLockLaterMint() public {
+        address settlement = factory.create(
+            keccak256("wbtc-out"), payable(recipient), ExitSettlement.OutputAsset.WBTC, 1_900, 3_000, uint64(block.timestamp + 1 hours)
+        );
+        usdc.mint(settlement, 1);
+        vm.expectRevert("SLIPPAGE");
+        ExitSettlement(payable(settlement)).settle();
+
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(griefer);
+        ExitSettlement(payable(settlement)).recoverAsUsdc();
+        require(usdc.balanceOf(recipient) == 1, "dust recovered");
+
+        usdc.mint(settlement, 1_000);
+        require(ExitSettlement(payable(settlement)).settle() == 2_000, "swap still works");
+        require(wbtc.balanceOf(recipient) == 2_000, "wbtc paid out");
+    }
+
+    function testEmptySettleReverts() public {
+        address settlement = factory.create(
+            keccak256("empty"), payable(recipient), ExitSettlement.OutputAsset.USDC, 0, 0, uint64(block.timestamp + 1 hours)
+        );
+        vm.expectRevert(ExitSettlement.EmptyBalance.selector);
+        ExitSettlement(payable(settlement)).settle();
+    }
+
+    function testRecoveryWaitsForWindow() public {
+        address settlement = factory.create(
+            keccak256("window"), payable(recipient), ExitSettlement.OutputAsset.WBTC, 1, 3_000, uint64(block.timestamp + 1 hours)
+        );
+        usdc.mint(settlement, 5);
+        vm.expectRevert(ExitSettlement.RecoveryNotReady.selector);
+        ExitSettlement(payable(settlement)).recoverAsUsdc();
+    }
+
+    function testSwapOutputRequiresFloor() public {
+        vm.expectRevert(ExitSettlement.BadConfiguration.selector);
+        factory.create(
+            keccak256("no-floor"), payable(recipient), ExitSettlement.OutputAsset.WBTC, 0, 3_000, uint64(block.timestamp + 1 hours)
+        );
+        // USDC output has no swap, so no floor is required.
+        factory.create(
+            keccak256("usdc-no-floor"), payable(recipient), ExitSettlement.OutputAsset.USDC, 0, 0, uint64(block.timestamp + 1 hours)
+        );
+    }
+
+    function testEthOutputPaysRecipient() public {
+        address settlement = factory.create(
+            keccak256("eth-out"), payable(recipient), ExitSettlement.OutputAsset.ETH, 1_900, 500, uint64(block.timestamp + 1 hours)
+        );
+        usdc.mint(settlement, 1_000);
+        vm.deal(address(weth), 1 ether);
+        uint256 before = recipient.balance;
+        require(ExitSettlement(payable(settlement)).settle() == 2_000, "eth output");
+        require(recipient.balance - before == 2_000, "eth paid");
+    }
+}

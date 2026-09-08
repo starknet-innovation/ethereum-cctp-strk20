@@ -3,7 +3,9 @@ import rateLimit from '@fastify/rate-limit'
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify'
 import {
   CHAIN,
+  STARKNET_SELECTORS,
   createFlowSchema,
+  feltEquals,
   flowUpdateSchema,
   quoteRequestSchema,
   type ProofRelayJob,
@@ -16,6 +18,7 @@ import {
   createPublicClient,
   createWalletClient,
   http,
+  parseEventLogs,
   type Address,
   type Hex,
 } from 'viem'
@@ -164,17 +167,45 @@ const EXIT_SETTLEMENT_ABI = [
   },
 ] as const
 
+const ENTRY_ROUTER_ABI = [
+  {
+    type: 'event',
+    name: 'EntryStarted',
+    inputs: [
+      { name: 'flowId', type: 'bytes32', indexed: true },
+      { name: 'sender', type: 'address', indexed: true },
+      { name: 'inputAsset', type: 'uint8', indexed: true },
+      { name: 'inputAmount', type: 'uint256', indexed: false },
+      { name: 'usdcBurned', type: 'uint256', indexed: false },
+      { name: 'starknetRecipient', type: 'uint256', indexed: false },
+    ],
+  },
+] as const
+
+/**
+ * Confirms that an Ethereum transaction is a successful `PrivacyEntryRouter.start` whose CCTP burn
+ * names the flow's Starknet account and was sent by the flow's Ethereum sender.
+ */
+export type EntryVerifier = (args: {
+  txHash: string
+  ethereumSender: string
+  starknetAccount: string
+}) => Promise<boolean>
+
 export interface ServerOverrides {
   quoteDependencies?: QuoteDependencies
   fetchImpl?: typeof fetch
   stateStore?: StateStore
+  entryVerifier?: EntryVerifier
 }
 
 export async function buildServer(config: ApiConfig, overrides: ServerOverrides = {}) {
   const app = Fastify({
     logger: process.env.NODE_ENV === 'production' ? { level: 'info' } : false,
     bodyLimit: 2 * 1024 * 1024,
-    trustProxy: (_address, hop) => hop <= 1,
+    // Exactly one trusted hop (hop 0 is the socket peer, the managed ALB). Trusting hop 1 as well
+    // let a client forge X-Forwarded-For and pick its own rate-limit key.
+    trustProxy: (_address, hop) => hop < 1,
   })
   await app.register(cors, { origin: config.CORS_ORIGIN, methods: ['GET', 'POST', 'PATCH'] })
   await app.register(rateLimit, { global: true, max: 120, timeWindow: '1 minute' })
@@ -195,6 +226,11 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
       )
     : undefined
   const fetchImpl = overrides.fetchImpl ?? fetch
+  const entryVerifier =
+    overrides.entryVerifier ??
+    (config.ETHEREUM_RPC_URL && config.ETHEREUM_ENTRY_ROUTER
+      ? liveEntryVerifier(config.ETHEREUM_RPC_URL, config.ETHEREUM_ENTRY_ROUTER as Address)
+      : undefined)
   let relayerSubmissionActive = false
 
   app.addHook('onClose', async () => stateStore.close())
@@ -268,6 +304,16 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
     const token = flowToken(request.headers['x-flow-token'])
     const parsed = flowUpdateSchema.safeParse(request.body)
     if (!token || !parsed.success) return reply.code(400).send({ error: 'Invalid update' })
+    if (parsed.data.phase === 'bridging-to-starknet') {
+      // Operator-paid AVNU sponsorship opens in this phase. Tie it to a confirmed entry burn through
+      // the POC router so a self-asserted phase cannot spend operator credit.
+      if (!entryVerifier) return reply.code(503).send({ error: 'Entry verification is not configured' })
+      const current = await flowStore.read(request.params.id, token)
+      if (!current) return reply.code(404).send({ error: 'Flow not found' })
+      if (!current.entryTxHash || !(await verifiedEntry(entryVerifier, current))) {
+        return reply.code(409).send({ error: 'Entry transaction could not be verified on Ethereum' })
+      }
+    }
     try {
       const flow = await flowStore.update(request.params.id, token, parsed.data)
       return flow ? flow : reply.code(404).send({ error: 'Flow not found' })
@@ -805,58 +851,169 @@ function paymasterRequestAllowed(
   const parameters = record(request.params.parameters)
   const feeMode = record(parameters?.fee_mode)
   if (!transaction || parameters?.version !== '0x1' || !feeMode) return false
+  // On execute the account signs whatever `typed_data` carries, so that is what must be checked;
+  // the `calls` array only exists on build.
+  const executing = request.method === 'paymaster_executeTransaction'
 
   if (flow.phase === 'bridging-to-starknet') {
-    if (!['deploy_and_invoke', 'invoke'].includes(String(transaction.type))) return false
     if (feeMode.mode !== 'sponsored') return false
+    const type = String(transaction.type)
+    if (!['deploy', 'deploy_and_invoke', 'invoke'].includes(type)) return false
+    if (type !== 'invoke' && !expectedDeployment(record(transaction.deployment), flow)) return false
+    if (type === 'deploy') return true
     const invoke = record(transaction.invoke)
-    if (!feltEquals(invoke?.user_address, flow.starknetAccount)) return false
-    if (request.method === 'paymaster_executeTransaction') return true
-    const calls = Array.isArray(invoke?.calls) ? invoke.calls : []
-    return calls.length === 1 && feltEquals(record(calls[0])?.to, CHAIN.starknet.cctp.messageTransmitterV2)
+    if (!invoke || !feltEquals(invoke.user_address, flow.starknetAccount)) return false
+    const calls = executing ? typedDataCalls(record(invoke.typed_data)) : requestCalls(invoke.calls)
+    return (
+      calls !== undefined &&
+      calls.length === 1 &&
+      isCall(calls[0], CHAIN.starknet.cctp.messageTransmitterV2, STARKNET_SELECTORS.receive_message)
+    )
   }
 
   if (flow.phase === 'pool-depositing') {
     if (transaction.type !== 'invoke_and_apply_action' || !privateUsdcFee(feeMode)) return false
     const invoke = record(transaction.invoke)
-    if (!feltEquals(invoke?.user_address, flow.starknetAccount)) return false
-    if (request.method === 'paymaster_executeTransaction') return true
-    if (!expectedPool(transaction)) return false
-    const calls = Array.isArray(invoke?.calls) ? invoke.calls : []
-    const approve = calls.length === 1 ? record(calls[0]) : undefined
-    const calldata = Array.isArray(approve?.calldata) ? approve.calldata : []
-    return feltEquals(approve?.to, CHAIN.starknet.usdc) && feltEquals(calldata[0], CHAIN.starknet.privacyPool)
+    if (!invoke || !feltEquals(invoke.user_address, flow.starknetAccount)) return false
+    const applyAction = record(transaction.apply_action)
+    if (!applyAction) return false
+    if (executing ? !expectedApplyActionsCall(applyAction) : !expectedPool(applyAction)) return false
+    const calls = executing ? typedDataCalls(record(invoke.typed_data)) : requestCalls(invoke.calls)
+    if (!calls || calls.length !== 1) return false
+    const approve = calls[0]
+    return (
+      isCall(approve, CHAIN.starknet.usdc, STARKNET_SELECTORS.approve) &&
+      feltEquals(approve?.calldata[0], CHAIN.starknet.privacyPool)
+    )
   }
 
   if (flow.phase === 'pool-withdrawing') {
     if (transaction.type !== 'apply_action' || !privateUsdcFee(feeMode)) return false
-    return request.method === 'paymaster_executeTransaction' || expectedPool(transaction)
+    const applyAction = record(transaction.apply_action)
+    if (!applyAction) return false
+    return executing ? expectedApplyActionsCall(applyAction) : expectedPool(applyAction)
   }
 
   return false
+}
+
+interface NormalizedCall {
+  to: unknown
+  selector: unknown
+  calldata: unknown[]
+}
+
+function requestCalls(value: unknown): NormalizedCall[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const calls: NormalizedCall[] = []
+  for (const entry of value) {
+    const call = record(entry)
+    if (!call) return undefined
+    calls.push({
+      to: call.to,
+      selector: call.selector,
+      calldata: Array.isArray(call.calldata) ? call.calldata : [],
+    })
+  }
+  return calls
+}
+
+/** The calls the account will actually authorise, from SNIP-9 typed data in the v1 or v2 layout. */
+function typedDataCalls(typedData: Record<string, unknown> | undefined): NormalizedCall[] | undefined {
+  const message = record(typedData?.message)
+  const domain = record(typedData?.domain)
+  if (!message || !domain || !expectedChain(domain.chainId)) return undefined
+  const raw = Array.isArray(message.Calls)
+    ? message.Calls
+    : Array.isArray(message.calls)
+      ? message.calls
+      : undefined
+  if (!raw) return undefined
+  const calls: NormalizedCall[] = []
+  for (const entry of raw) {
+    const call = record(entry)
+    if (!call) return undefined
+    const calldata = call.Calldata ?? call.calldata
+    calls.push({
+      to: call.To ?? call.to,
+      selector: call.Selector ?? call.selector,
+      calldata: Array.isArray(calldata) ? calldata : [],
+    })
+  }
+  return calls
+}
+
+function expectedChain(chainId: unknown): boolean {
+  return chainId === 'SN_MAIN' || feltEquals(chainId, CHAIN.starknet.chainId)
+}
+
+function isCall(call: NormalizedCall | undefined, to: string, selector: string): boolean {
+  return call !== undefined && feltEquals(call.to, to) && feltEquals(call.selector, selector)
+}
+
+/** Only the flow's own OpenZeppelin account, with its public key as salt and sole constructor arg. */
+function expectedDeployment(deployment: Record<string, unknown> | undefined, flow: PublicFlow): boolean {
+  if (!deployment) return false
+  const calldata = Array.isArray(deployment.calldata) ? deployment.calldata : undefined
+  return (
+    feltEquals(deployment.class_hash, CHAIN.starknet.ozAccountClassHash) &&
+    feltEquals(deployment.address, flow.starknetAccount) &&
+    calldata !== undefined &&
+    calldata.length === 1 &&
+    feltEquals(deployment.salt, calldata[0]) &&
+    (deployment.version === 1 || deployment.version === '1' || deployment.version === '0x1')
+  )
+}
+
+function expectedApplyActionsCall(applyAction: Record<string, unknown>): boolean {
+  const call = record(applyAction.apply_actions_call)
+  return (
+    call !== undefined &&
+    feltEquals(call.to, CHAIN.starknet.privacyPool) &&
+    feltEquals(call.selector, STARKNET_SELECTORS.apply_actions)
+  )
 }
 
 function privateUsdcFee(feeMode: Record<string, unknown>): boolean {
   return feeMode.mode === 'sponsored_private' && feltEquals(feeMode.pool_fee_token, CHAIN.starknet.usdc)
 }
 
-function expectedPool(transaction: Record<string, unknown>): boolean {
-  return feltEquals(record(transaction.apply_action)?.pool_address, CHAIN.starknet.privacyPool)
-}
-
-function feltEquals(actual: unknown, expected: string): boolean {
-  try {
-    return (typeof actual === 'string' || typeof actual === 'number' || typeof actual === 'bigint') &&
-      BigInt(actual) === BigInt(expected)
-  } catch {
-    return false
-  }
+function expectedPool(applyAction: Record<string, unknown>): boolean {
+  return feltEquals(applyAction.pool_address, CHAIN.starknet.privacyPool)
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined
+}
+
+async function verifiedEntry(verifier: EntryVerifier, flow: PublicFlow): Promise<boolean> {
+  try {
+    return await verifier({
+      txHash: flow.entryTxHash ?? '',
+      ethereumSender: flow.ethereumSender,
+      starknetAccount: flow.starknetAccount,
+    })
+  } catch {
+    return false
+  }
+}
+
+function liveEntryVerifier(rpcUrl: string, entryRouter: Address): EntryVerifier {
+  const client = createPublicClient({ chain: mainnet, transport: http(rpcUrl) })
+  return async ({ txHash, ethereumSender, starknetAccount }) => {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return false
+    const receipt = await client.waitForTransactionReceipt({ hash: txHash as Hex, timeout: 30_000 })
+    if (receipt.status !== 'success') return false
+    const events = parseEventLogs({ abi: ENTRY_ROUTER_ABI, eventName: 'EntryStarted', logs: receipt.logs })
+    return events.some(
+      (event) =>
+        event.address.toLowerCase() === entryRouter.toLowerCase() &&
+        event.args.sender.toLowerCase() === ethereumSender.toLowerCase() &&
+        event.args.starknetRecipient === BigInt(starknetAccount),
+    )
+  }
 }
 
 function flowToken(value: string | string[] | undefined): string | undefined {

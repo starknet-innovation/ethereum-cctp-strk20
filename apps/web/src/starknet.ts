@@ -1,5 +1,11 @@
 import { createPrivateTransfers } from '@starkware-libs/starknet-privacy-sdk'
-import { CHAIN, FORWARDING_HOOK_DATA } from '@privacy-round-trip/shared'
+import {
+  CHAIN,
+  FORWARDING_HOOK_DATA,
+  MAX_PRIVATE_FEE_BASE,
+  MAX_PRIVATE_FEE_BPS,
+  feltEquals,
+} from '@privacy-round-trip/shared'
 import {
   Account,
   hash,
@@ -30,7 +36,7 @@ interface FeeAction {
   amount: string
 }
 
-interface PaymasterCall {
+export interface PaymasterCall {
   to: string
   selector: string
   calldata: string[]
@@ -45,6 +51,9 @@ export interface PaymasterCapability {
   flowId: string
   flowToken: string
 }
+
+type BuiltPaymasterTransaction = Awaited<ReturnType<Account['buildPaymasterTransaction']>>
+type AccountDeployment = Extract<BuiltPaymasterTransaction, { type: 'deploy' }>['deployment']
 
 export async function waitForCircleAttestation(
   ethereumTxHash: string,
@@ -62,7 +71,13 @@ export async function waitForCircleAttestation(
   throw new Error('Circle attestation timed out. Keep this tab open and retry when Iris recovers.')
 }
 
-/** Deploy the browser-generated account and claim the inbound CCTP mint in one sponsored tx. */
+/**
+ * Deploy the browser-generated account and claim the inbound CCTP mint in one sponsored tx.
+ *
+ * starknet.js skips its call-equality check when the fee mode is `sponsored`, so the typed data
+ * AVNU returns is verified here before the account signs it. Without this a compromised relay or
+ * paymaster could append a `transfer` of the freshly minted USDC to the outside execution.
+ */
 export async function sponsoredMint(
   identity: EphemeralIdentity,
   message: `0x${string}`,
@@ -77,7 +92,7 @@ export async function sponsoredMint(
     signer: identity.signer,
     paymaster,
   })
-  const deployed = await isDeployed(provider, identity.address)
+  const deployed = await isAccountDeployed(identity.address, provider)
   const call: Call = {
     contractAddress: CHAIN.starknet.cctp.messageTransmitterV2,
     entrypoint: 'receive_message',
@@ -86,21 +101,47 @@ export async function sponsoredMint(
       ...bytesToByteArrayCalldata(hexToBytes(attestation)),
     ],
   }
-  const options = {
+  const built = await account.buildPaymasterTransaction([call], {
     feeMode: { mode: 'sponsored' as const },
-    ...(deployed
-      ? {}
-      : {
-          deploymentData: {
-            address: identity.address,
-            class_hash: identity.classHash,
-            salt: identity.salt,
-            calldata: [identity.publicKey],
-            version: 1 as const,
-          },
-        }),
-  }
-  const result = await account.executePaymasterTransaction([call], options)
+    ...(deployed ? {} : { deploymentData: deploymentDataFor(identity) }),
+  })
+  if (built.type === 'deploy') throw new Error('Paymaster dropped the CCTP claim from the sponsored transaction')
+  if (built.type === 'deploy_and_invoke') assertExpectedDeployment(built.deployment, identity)
+  else if (!deployed) throw new Error('Paymaster omitted the required account deployment')
+  assertTypedDataCalls(built.typed_data, [toPaymasterCall(call)])
+
+  const prepared = await account.preparePaymasterTransaction(built)
+  const result = await paymaster.executeTransaction(prepared, built.parameters)
+  await waitForSuccessfulTransaction(provider, result.transaction_hash)
+  return result.transaction_hash
+}
+
+/**
+ * Deploy the browser-generated account on its own. Used by recovery when a third party already
+ * called the permissionless `receive_message`, which mints to the address without deploying it.
+ * Returns undefined when the account already exists.
+ */
+export async function sponsoredDeploy(
+  identity: EphemeralIdentity,
+  capability: PaymasterCapability,
+): Promise<string | undefined> {
+  const provider = providerForApp()
+  if (await isAccountDeployed(identity.address, provider)) return undefined
+  const paymaster = new PaymasterRpc({ nodeUrl: PAYMASTER_URL, headers: paymasterHeaders(capability) })
+  const account = new Account({
+    provider,
+    address: identity.address,
+    signer: identity.signer,
+    paymaster,
+  })
+  const built = await account.buildPaymasterTransaction([], {
+    feeMode: { mode: 'sponsored' as const },
+    deploymentData: deploymentDataFor(identity),
+  })
+  if (built.type !== 'deploy') throw new Error('Paymaster attached calls to a deployment-only request')
+  assertExpectedDeployment(built.deployment, identity)
+  const prepared = await account.preparePaymasterTransaction(built)
+  const result = await paymaster.executeTransaction(prepared, built.parameters)
   await waitForSuccessfulTransaction(provider, result.transaction_hash)
   return result.transaction_hash
 }
@@ -112,6 +153,23 @@ export async function starknetUsdcBalance(owner: string): Promise<bigint> {
     calldata: [owner],
   })
   return u256FromParts(result[0] ?? '0', result[1] ?? '0')
+}
+
+/** Sum of the account's unspent private USDC notes, discovered through the pool indexer. */
+export async function privateUsdcBalance(identity: EphemeralIdentity): Promise<bigint> {
+  const { notes } = await poolClient(identity, memoryProofCheckpoint()).discoverNotes({
+    tokens: [BigInt(CHAIN.starknet.usdc)],
+  })
+  return (notes.get(CHAIN.starknet.usdc) ?? []).reduce((total, note) => total + BigInt(note.amount), 0n)
+}
+
+export async function isAccountDeployed(address: string, provider = providerForApp()): Promise<boolean> {
+  try {
+    await provider.getClassHashAt(address)
+    return true
+  } catch {
+    return false
+  }
 }
 
 export async function waitForPrivacyProvingReadyAfterTx(
@@ -138,8 +196,8 @@ export async function sponsoredPrivacyDeposit(args: {
   amount: bigint
   capability: PaymasterCapability
   proofCheckpoint?: ProofCheckpointStore
-  onTransactionSubmitted?: (result: { txHash: string; privateAmount: bigint }) => void
-}): Promise<{ txHash: string; privateAmount: bigint }> {
+  onTransactionSubmitted?: (result: { txHash: string; privateAmount: bigint; fee: bigint }) => void
+}): Promise<{ txHash: string; privateAmount: bigint; fee: bigint }> {
   if (args.amount <= 0n) throw new Error('No Starknet USDC is available to shield')
   const mode = privateFeeMode()
   const approve = toPaymasterCall({
@@ -159,6 +217,8 @@ export async function sponsoredPrivacyDeposit(args: {
     },
     parameters: { version: '0x1', fee_mode: mode },
   }, args.capability)
+  // The account signs `typed_data` verbatim, so it must carry exactly the pool approval requested.
+  assertTypedDataCalls(built.typed_data, [approve])
   const fee = validateFee(built.fee_action, CHAIN.starknet.usdc, args.amount)
 
   const proofCheckpoint = args.proofCheckpoint ?? memoryProofCheckpoint()
@@ -190,7 +250,7 @@ export async function sponsoredPrivacyDeposit(args: {
     mode,
     capability: args.capability,
   })
-  const submitted = { txHash: response.transaction_hash, privateAmount: args.amount - fee }
+  const submitted = { txHash: response.transaction_hash, privateAmount: args.amount - fee, fee }
   args.onTransactionSubmitted?.(submitted)
   proofCheckpoint.clear()
   await waitForSuccessfulTransaction(providerForApp(), response.transaction_hash)
@@ -269,6 +329,65 @@ export async function sponsoredPrivacyExit(args: {
   return response.transaction_hash
 }
 
+/**
+ * Verify that SNIP-9 typed data (v1 or v2 layout) authorises exactly the requested calls and
+ * targets Starknet mainnet. Throws otherwise; nothing is signed until this passes.
+ */
+export function assertTypedDataCalls(typedData: unknown, expected: PaymasterCall[]): void {
+  const data = record(typedData)
+  const domain = record(data?.domain)
+  const message = record(data?.message)
+  if (!data || !domain || !message) throw new Error('Paymaster returned malformed typed data')
+  if (domain.chainId !== 'SN_MAIN' && !feltEquals(domain.chainId, CHAIN.starknet.chainId)) {
+    throw new Error('Paymaster typed data targets another Starknet chain')
+  }
+  const calls = Array.isArray(message.Calls)
+    ? message.Calls
+    : Array.isArray(message.calls)
+      ? message.calls
+      : undefined
+  if (!calls || calls.length !== expected.length) {
+    throw new Error(
+      `Paymaster typed data carries ${calls?.length ?? 0} call(s); expected ${expected.length}`,
+    )
+  }
+  calls.forEach((entry, index) => {
+    const call = record(entry)
+    const want = expected[index]!
+    const calldata = call?.Calldata ?? call?.calldata
+    const matches =
+      call !== undefined &&
+      feltEquals(call.To ?? call.to, want.to) &&
+      feltEquals(call.Selector ?? call.selector, want.selector) &&
+      Array.isArray(calldata) &&
+      calldata.length === want.calldata.length &&
+      calldata.every((value, position) => feltEquals(value, want.calldata[position]))
+    if (!matches) throw new Error(`Paymaster typed data call ${index} does not match the requested call`)
+  })
+}
+
+/** Deployment data for the flow's own OpenZeppelin account: public key as salt and sole argument. */
+function deploymentDataFor(identity: EphemeralIdentity) {
+  return {
+    address: identity.address,
+    class_hash: identity.classHash,
+    salt: identity.salt,
+    calldata: [identity.publicKey],
+    version: 1 as const,
+  }
+}
+
+function assertExpectedDeployment(deployment: AccountDeployment, identity: EphemeralIdentity): void {
+  const calldata = Array.isArray(deployment.calldata) ? deployment.calldata : []
+  const matches =
+    feltEquals(deployment.address, identity.address) &&
+    feltEquals(deployment.class_hash, CHAIN.starknet.ozAccountClassHash) &&
+    feltEquals(deployment.salt, identity.salt) &&
+    calldata.length === 1 &&
+    feltEquals(calldata[0], identity.publicKey)
+  if (!matches) throw new Error('Paymaster changed the account deployment parameters')
+}
+
 async function executeInvokeAndApply(args: {
   identity: EphemeralIdentity
   typedData: TypedData
@@ -326,6 +445,8 @@ async function withFreshProvingBlock<T extends { execute(options: { provingBlock
     } catch (error) {
       lastError = error
       if (!isRetryableProofError(error) || attempt === 5) throw error
+      // With no submitted job there is nothing to resume; let the next attempt pick a fresh block.
+      if (!checkpointStore.load()?.job) checkpointStore.clear()
       await sleep(POLL_MS)
     }
   }
@@ -374,13 +495,31 @@ function privateFeeMode() {
   }
 }
 
-function validateFee(action: FeeAction, token: string, available: bigint): bigint {
+/**
+ * Accept a paymaster fee only if it is in USDC, leaves something to move, and stays under the
+ * client-side ceiling (absolute and relative). The paymaster response names the fee, so without a
+ * ceiling a malicious paymaster or relay could take almost the whole note.
+ */
+export function validateFee(action: FeeAction, token: string, available: bigint): bigint {
   if (action.type !== 'withdraw' || felt(action.token) !== felt(token)) {
     throw new Error('Paymaster returned an invalid private fee token')
   }
   const fee = BigInt(action.amount)
   if (fee < 0n || fee >= available) throw new Error('Paymaster fee consumes the transfer')
+  const relativeCap = (available * BigInt(MAX_PRIVATE_FEE_BPS)) / 10_000n
+  const cap = relativeCap < MAX_PRIVATE_FEE_BASE ? relativeCap : MAX_PRIVATE_FEE_BASE
+  if (fee > cap) {
+    throw new Error(
+      `Paymaster fee ${formatUsdc(fee)} USDC exceeds the ${formatUsdc(cap)} USDC ceiling for this transfer`,
+    )
+  }
   return fee
+}
+
+function formatUsdc(value: bigint): string {
+  const whole = value / 1_000_000n
+  const fraction = (value % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '')
+  return fraction ? `${whole}.${fraction}` : whole.toString()
 }
 
 function toPaymasterCall(call: Call): PaymasterCall {
@@ -398,6 +537,12 @@ function felt(value: unknown): string {
     throw new Error('Expected a felt-compatible value')
   }
   return `0x${BigInt(value).toString(16)}`
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
 }
 
 function u256(value: bigint): [string, string] {
@@ -437,15 +582,6 @@ function bytesToByteArrayCalldata(bytes: Uint8Array): string[] {
 
 function providerForApp(): RpcProvider {
   return new RpcProvider({ nodeUrl: RPC_URL })
-}
-
-async function isDeployed(provider: RpcProvider, address: string): Promise<boolean> {
-  try {
-    await provider.getClassHashAt(address)
-    return true
-  } catch {
-    return false
-  }
 }
 
 async function waitForSuccessfulTransaction(provider: RpcProvider, hashValue: string): Promise<void> {

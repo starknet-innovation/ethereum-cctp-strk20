@@ -55,6 +55,12 @@ export const flowPhaseSchema = z.enum([
 ])
 export type FlowPhase = z.infer<typeof flowPhaseSchema>
 
+/**
+ * Server-side flow record. It deliberately carries only entry-side identifiers. The settlement
+ * address and every exit-side transaction hash resolve on-chain to the final recipient, so storing
+ * them next to `ethereumSender`/`entryTxHash` would be a direct sender-to-recipient join. Exit-side
+ * progress lives only in the browser (memory or the same-tab recovery bundle).
+ */
 export interface PublicFlow {
   id: string
   phase: FlowPhase
@@ -62,19 +68,18 @@ export interface PublicFlow {
   ethereumSender: string
   starknetAccount: string
   delayMinutes: number
-  settlementAddress?: string
   entryTxHash?: string
   inboundMintTxHash?: string
   poolDepositTxHash?: string
   privacyDepositConfirmedAt?: string
   exitEligibleAt?: string
-  poolExitTxHash?: string
-  outboundMintTxHash?: string
-  settlementTxHash?: string
   failureReason?: string
   createdAt: string
   updatedAt: string
 }
+
+/** Phases whose transition may carry a transaction hash. Exit-side phases never do (see PublicFlow). */
+export const TX_HASH_PHASES: readonly FlowPhase[] = ['entry-submitted', 'starknet-funded', 'privacy-delay']
 
 export const createFlowSchema = z
   .object({
@@ -89,11 +94,19 @@ export const flowUpdateSchema = z
   .object({
     phase: flowPhaseSchema,
     txHash: hashSchema.optional(),
-    settlementAddress: addressSchema.optional(),
     failureReason: z.string().min(1).max(500).optional(),
     occurredAt: z.string().datetime().optional(),
   })
   .strict()
+  .superRefine((update, context) => {
+    if (update.txHash && !TX_HASH_PHASES.includes(update.phase)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['txHash'],
+        message: 'Exit-side transaction hashes are not stored server-side',
+      })
+    }
+  })
 
 export type FlowUpdate = z.infer<typeof flowUpdateSchema>
 

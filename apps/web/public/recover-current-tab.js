@@ -1,36 +1,42 @@
 const STORAGE_KEY = '__privacy_round_trip_recovery_v1'
+const PROGRESS_KIND = 'privacy-round-trip-progress'
 
 try {
   const roots = reactRoots()
   const identities = []
   const flows = []
   const forms = []
+  const progressHints = []
   const visited = new Set()
 
   for (const root of roots) visit(root)
 
   const identity = identities.find((value) => value.privateKey && value.viewingKey > 0n)
-  const sourceFlow = flows.find(
+  // Any stopped flow that left Ethereum can be recovered; the API record may lag the chain, so the
+  // phase is only a hint. Prefer the flow the app marked as failed.
+  const candidates = flows.filter(
     (value) =>
-      value.phase === 'failed' &&
       identity &&
       sameFelt(value.starknetAccount, identity.address) &&
       value.entryTxHash &&
-      value.inboundMintTxHash,
+      value.phase !== 'completed',
   )
+  const sourceFlow = candidates.find((value) => value.phase === 'failed') ?? candidates[0]
   const form = forms.find(
     (value) =>
       typeof value.recipient === 'string' &&
       /^0x[0-9a-fA-F]{40}$/.test(value.recipient) &&
       ['ETH', 'USDC', 'WBTC'].includes(value.outputToken),
   )
+  const progress =
+    progressHints.find((value) => sourceFlow && value.flowId === sourceFlow.id) ?? progressHints[0] ?? {}
 
   if (!identity) throw new Error('The one-use account key was not found. Keep this tab open.')
-  if (!sourceFlow) throw new Error('The failed bridged flow was not found. Keep this tab open.')
+  if (!sourceFlow) throw new Error('No stopped flow with an Ethereum entry was found. Keep this tab open.')
   if (!form) throw new Error('The Ethereum payout instructions were not found. Keep this tab open.')
 
   const payload = {
-    version: 1,
+    version: 2,
     identity: {
       address: identity.address,
       classHash: identity.classHash,
@@ -47,6 +53,19 @@ try {
       recipient: form.recipient,
       delayMinutes: form.delayMinutes,
     },
+    progress: {
+      ...(progress.entryTxHash ? { entryTxHash: progress.entryTxHash } : {}),
+      ...(progress.inboundMintTxHash ? { inboundMintTxHash: progress.inboundMintTxHash } : {}),
+      ...(progress.depositTxHash ? { depositTxHash: progress.depositTxHash } : {}),
+      ...(progress.depositedAt ? { depositedAt: progress.depositedAt } : {}),
+      ...(progress.privateAmount ? { privateAmount: progress.privateAmount } : {}),
+      ...(progress.salt ? { salt: progress.salt } : {}),
+      ...(progress.recoverAfter ? { recoverAfter: progress.recoverAfter } : {}),
+      ...(progress.settlement ? { settlement: progress.settlement } : {}),
+      ...(progress.settlementTxHash ? { settlementTxHash: progress.settlementTxHash } : {}),
+      ...(progress.exitTxHash ? { exitTxHash: progress.exitTxHash } : {}),
+      ...(progress.finalTxHash ? { finalTxHash: progress.finalTxHash } : {}),
+    },
   }
   sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
   location.assign('/recovery.html')
@@ -60,6 +79,7 @@ try {
       hooksSeen.add(hook)
       const value = hook.memoizedState
       if (isIdentity(value?.current)) identities.push(value.current)
+      if (isProgress(value?.current)) progressHints.push(value.current)
       if (isFlow(value)) flows.push(value)
       if (isForm(value)) forms.push(value)
       hook = hook.next
@@ -106,6 +126,10 @@ function isIdentity(value) {
       typeof value.viewingKey === 'bigint' &&
       typeof value.publicKey === 'string',
   )
+}
+
+function isProgress(value) {
+  return Boolean(value && typeof value === 'object' && value.kind === PROGRESS_KIND)
 }
 
 function isFlow(value) {

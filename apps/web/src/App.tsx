@@ -262,8 +262,11 @@ export function App() {
           <div>
             <h2>Keep this browser window open</h2>
             <p>
-              To stay within the one/two-prompt goal, this POC generates a one-use Starknet key and
-              privacy secret locally. They are never sent to the backend and are not recoverable after a reload.
+              To stay within the one/two-prompt goal, this POC generates a one-use Starknet signing
+              key and privacy viewing key locally. The signing key never leaves this tab. The viewing
+              key travels inside the proof and note-discovery requests that the operator relays to
+              Starkscan and the pool indexer, so the operator can read this transfer’s private notes
+              but cannot spend them. Neither key is recoverable after a reload.
             </p>
           </div>
           <div className="warning-meta"><b>Minimum delay</b><span>5 minutes</span></div>

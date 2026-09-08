@@ -1,16 +1,23 @@
-import { TOKENS, type PublicFlow, type TokenSymbol } from '@privacy-round-trip/shared'
-import { formatUnits, isAddress, type Address, type Hex } from 'viem'
+import { POC_DEPLOYMENTS, type PublicFlow, type TokenSymbol } from '@privacy-round-trip/shared'
+import { isAddress, type Address, type Hex } from 'viem'
 import { api } from './api.js'
+import { assertPinnedDeployments } from './deployments.js'
 import {
   clearIdentity,
   restoreEphemeralIdentity,
   type EphemeralIdentity,
   type SerializedEphemeralIdentity,
 } from './identity.js'
+import type { RecoveryProgress } from './progress.js'
 import {
+  isAccountDeployed,
+  privateUsdcBalance,
+  sponsoredDeploy,
+  sponsoredMint,
   sponsoredPrivacyDeposit,
   sponsoredPrivacyExit,
   starknetUsdcBalance,
+  waitForCircleAttestation,
   waitForPrivacyProvingReadyAfterTx,
   type PaymasterCapability,
 } from './starknet.js'
@@ -30,16 +37,30 @@ import type { TransferForm } from './useRoundTrip.js'
 import './recovery.css'
 
 const STORAGE_KEY = '__privacy_round_trip_recovery_v1'
+const RECOVERY_WINDOW_SECONDS = 60 * 60
+// The settlement constructor rejects a recovery time at or before the current block, so a saved
+// value this close to expiry is treated as stale and regenerated together with the salt.
+const STALE_RECOVERY_MARGIN_SECONDS = 120
 
+/**
+ * Everything the recovery page needs, derived from the stopped tab (identity, the failed flow, the
+ * payout instructions and any exit-side progress hints) plus what recovery itself learns. The
+ * bundle is a same-tab `sessionStorage` object; the API never sees the exit-side fields.
+ */
 interface RecoveryBundle {
-  version: 1
+  version: 1 | 2
   identity: SerializedEphemeralIdentity
   sourceFlow: PublicFlow
   form: TransferForm
+  progress?: Partial<RecoveryProgress>
   recoveryFlow?: PublicFlow
   writeToken?: string
+  /** True once the private deposit is known to exist, with or without a transaction hash. */
+  deposited?: boolean
+  mintTxHash?: string
   privateAmount?: string
   depositTxHash?: string
+  depositedAt?: string
   settlement?: Address
   settlementTxHash?: Hex
   salt?: Hex
@@ -86,54 +107,68 @@ async function run(): Promise<void> {
   dot.className = 'pulse'
   try {
     const wallet = await connectedWallet(bundle.sourceFlow.ethereumSender)
+    assertPinnedDeployments(await api.config())
     let flow = await recoveryFlow()
     const capability = capabilityFor(flow)
 
+    if (flow.phase === 'bridging-to-starknet') {
+      flow = await completeInbound(flow, capability)
+    }
+
+    if (flow.phase === 'starknet-funded') {
+      flow = await transition(flow, 'pool-depositing')
+    }
+
     if (flow.phase === 'pool-depositing') {
-      update('The bridged USDC is safe. Generating and submitting the private deposit proof…')
-      const balance = await starknetUsdcBalance(identity.address)
-      if (!bundle.depositTxHash) {
+      if (!bundle.deposited) {
+        update('The bridged USDC is safe. Generating and submitting the private deposit proof…')
+        const balance = await starknetUsdcBalance(identity.address)
         if (balance <= 0n) throw new Error('No public USDC remains in the recovery account')
         const deposit = await sponsoredPrivacyDeposit({
           identity,
           amount: balance,
           capability,
           proofCheckpoint: proofCheckpoint('depositProof'),
-          onTransactionSubmitted: (submitted) => {
-            bundle.depositTxHash = submitted.txHash
-            bundle.privateAmount = submitted.privateAmount.toString()
-            saveBundle()
-          },
+          onTransactionSubmitted: (submitted) => recordDeposit(submitted.txHash, submitted.privateAmount),
         })
-        bundle.depositTxHash = deposit.txHash
-        bundle.privateAmount = deposit.privateAmount.toString()
-        saveBundle()
+        recordDeposit(deposit.txHash, deposit.privateAmount)
       }
       proofCheckpoint('depositProof').clear()
       flow = await transition(flow, 'privacy-delay', {
-        txHash: requiredString(bundle.depositTxHash, 'privacy deposit transaction'),
-        occurredAt: new Date().toISOString(),
+        ...(bundle.depositTxHash ? { txHash: bundle.depositTxHash } : {}),
+        occurredAt: bundle.depositedAt ?? new Date().toISOString(),
       })
     }
 
     if (flow.phase === 'privacy-delay') {
-      const depositHash = requiredString(flow.poolDepositTxHash ?? bundle.depositTxHash, 'privacy deposit transaction')
+      const depositHash = flow.poolDepositTxHash ?? bundle.depositTxHash
       const eligibleAt = Date.parse(requiredString(flow.exitEligibleAt, 'privacy exit time'))
       update(`Private note created. Holding until ${new Date(eligibleAt).toLocaleTimeString()}…`)
-      await Promise.all([waitUntil(eligibleAt), waitForPrivacyProvingReadyAfterTx(depositHash)])
+      await Promise.all([
+        waitUntil(eligibleAt),
+        depositHash ? waitForPrivacyProvingReadyAfterTx(depositHash) : Promise.resolve(),
+      ])
       flow = await transition(flow, 'pool-withdrawing')
     }
 
     if (flow.phase === 'pool-withdrawing') {
-      update('Delay complete. Creating the recipient-bound Ethereum settlement…')
+      update('Delay complete. Locating the private note…')
+      const privateAmount = bundle.privateAmount
+        ? BigInt(bundle.privateAmount)
+        : await privateUsdcBalance(identity)
+      if (privateAmount <= 0n) throw new Error('No private USDC note was found for the recovery account')
+      bundle.privateAmount = privateAmount.toString()
+      saveBundle()
+
+      update('Creating the recipient-bound Ethereum settlement…')
       await ensureSettlement(wallet, flow)
       if (!bundle.exitTxHash) {
         update('Generating the private exit proof and starting CCTP back to Ethereum…')
         bundle.exitTxHash = await sponsoredPrivacyExit({
           identity,
-          privateAmount: BigInt(requiredString(bundle.privateAmount, 'private amount')),
+          privateAmount,
           settlement: requiredString(bundle.settlement, 'settlement address'),
-          cctpExitAnonymizer: requiredString((await api.config()).starknet.cctpExitAnonymizer, 'exit anonymizer'),
+          cctpExitAnonymizer: POC_DEPLOYMENTS.starknet.cctpExitAnonymizer,
           cctpMaxFee: BigInt(flow.quote.outboundCctpMaxFeeBase),
           capability,
           proofCheckpoint: proofCheckpoint('exitProof'),
@@ -145,10 +180,8 @@ async function run(): Promise<void> {
         saveBundle()
       }
       proofCheckpoint('exitProof').clear()
-      flow = await transition(flow, 'bridging-to-ethereum', {
-        txHash: bundle.exitTxHash,
-        settlementAddress: requiredString(bundle.settlement, 'settlement address'),
-      })
+      // Exit-side hashes and the settlement address never go to the API record.
+      flow = await transition(flow, 'bridging-to-ethereum')
     }
 
     if (flow.phase === 'bridging-to-ethereum') {
@@ -165,7 +198,7 @@ async function run(): Promise<void> {
         saveBundle()
       }
       await waitForEthereumTransaction(wallet, bundle.finalTxHash)
-      flow = await transition(flow, 'completed', { txHash: bundle.finalTxHash })
+      flow = await transition(flow, 'completed')
     }
 
     if (flow.phase !== 'completed') throw new Error(`Recovery stopped at unexpected phase ${flow.phase}`)
@@ -194,6 +227,11 @@ async function run(): Promise<void> {
   }
 }
 
+/**
+ * Create the account-scoped recovery flow and walk it to the phase matching what already happened.
+ * The API re-verifies the original entry burn on Ethereum before it opens sponsorship, so the flow
+ * cannot be pushed past `entry-submitted` without a genuine burn to this account.
+ */
 async function recoveryFlow(): Promise<PublicFlow> {
   if (bundle.recoveryFlow && bundle.writeToken) {
     const latest = await api.getFlow(bundle.recoveryFlow.id, bundle.writeToken)
@@ -203,14 +241,7 @@ async function recoveryFlow(): Promise<PublicFlow> {
   }
 
   update('Creating a fresh, account-scoped recovery capability…')
-  const balance = await starknetUsdcBalance(identity.address)
-  if (balance <= 0n) throw new Error('No public USDC remains in the recovery account')
-  const quote = await api.quote({
-    inputToken: 'USDC',
-    outputToken: bundle.form.outputToken,
-    amount: formatUnits(balance, TOKENS.USDC.decimals),
-    slippageBps: 100,
-  })
+  const quote = await api.quote(bundle.sourceFlow.quote.request)
   const created = await api.createFlow({
     quoteId: quote.quoteId,
     ethereumSender: bundle.sourceFlow.ethereumSender,
@@ -226,17 +257,83 @@ async function recoveryFlow(): Promise<PublicFlow> {
     txHash: requiredString(bundle.sourceFlow.entryTxHash, 'original Ethereum entry transaction'),
   })
   flow = await transition(flow, 'bridging-to-starknet')
-  flow = await transition(flow, 'starknet-funded', {
-    txHash: requiredString(bundle.sourceFlow.inboundMintTxHash, 'original Starknet mint transaction'),
+  if (!bundle.deposited) return flow
+  flow = await transition(flow, 'starknet-funded', bundle.mintTxHash ? { txHash: bundle.mintTxHash } : {})
+  flow = await transition(flow, 'pool-depositing')
+  return transition(flow, 'privacy-delay', {
+    ...(bundle.depositTxHash ? { txHash: bundle.depositTxHash } : {}),
+    occurredAt: bundle.depositedAt ?? new Date().toISOString(),
   })
-  return transition(flow, 'pool-depositing')
+}
+
+/**
+ * Bring the inbound leg to "funded and deployed" from whatever state the chain is actually in:
+ * mint if the attestation was never claimed, tolerate a third party having claimed it, deploy the
+ * account if the mint landed on an undeployed address, and detect a deposit that already happened.
+ */
+async function completeInbound(flow: PublicFlow, capability: PaymasterCapability): Promise<PublicFlow> {
+  update('Checking the bridged USDC on Starknet…')
+  let balance = await starknetUsdcBalance(identity.address)
+  if (balance === 0n && !bundle.deposited && !bundle.mintTxHash) {
+    update('Waiting for Circle attestation and claiming USDC on Starknet…')
+    const attested = await waitForCircleAttestation(
+      requiredString(bundle.sourceFlow.entryTxHash, 'original Ethereum entry transaction'),
+    )
+    try {
+      bundle.mintTxHash = await sponsoredMint(identity, attested.message, attested.attestation as Hex, capability)
+      saveBundle()
+    } catch (error) {
+      // `receive_message` is permissionless; someone else may already have minted to this account.
+      balance = await starknetUsdcBalance(identity.address)
+      if (balance === 0n) throw error
+    }
+    balance = await starknetUsdcBalance(identity.address)
+  }
+
+  if (balance === 0n && !bundle.deposited) {
+    const shielded = await privateUsdcBalance(identity)
+    if (shielded === 0n) throw new Error('No public or private USDC was found for the recovery account')
+    bundle.deposited = true
+    bundle.privateAmount = shielded.toString()
+    bundle.depositedAt ??= new Date().toISOString()
+    saveBundle()
+  } else if (balance > 0n && !(await isAccountDeployed(identity.address))) {
+    update('Deploying the one-use Starknet account…')
+    await sponsoredDeploy(identity, capability)
+  }
+
+  flow = await transition(flow, 'starknet-funded', bundle.mintTxHash ? { txHash: bundle.mintTxHash } : {})
+  flow = await transition(flow, 'pool-depositing')
+  if (bundle.deposited) {
+    flow = await transition(flow, 'privacy-delay', {
+      ...(bundle.depositTxHash ? { txHash: bundle.depositTxHash } : {}),
+      occurredAt: bundle.depositedAt ?? new Date().toISOString(),
+    })
+  }
+  return flow
 }
 
 async function ensureSettlement(wallet: BrowserWallet, flow: PublicFlow): Promise<void> {
-  if (!bundle.salt) bundle.salt = randomHex32()
-  if (!bundle.recoverAfter) bundle.recoverAfter = Math.floor(Date.now() / 1_000) + 60 * 60
-  const config = await api.config()
-  const factory = requiredString(config.ethereum.exitSettlementFactory, 'settlement factory') as Address
+  // Reuse a settlement that already exists on-chain, whether this page or the stopped tab created it.
+  if (bundle.settlement && (await hasCode(wallet, bundle.settlement))) return
+  if (bundle.settlement && bundle.settlementTxHash) {
+    try {
+      await waitForEthereumTransaction(wallet, bundle.settlementTxHash)
+    } catch {
+      // Reverted or unknown transaction: fall through and deploy a fresh settlement.
+    }
+    if (await hasCode(wallet, bundle.settlement)) return
+  }
+
+  const now = Math.floor(Date.now() / 1_000)
+  if (!bundle.salt || !bundle.recoverAfter || bundle.recoverAfter <= now + STALE_RECOVERY_MARGIN_SECONDS) {
+    bundle.salt = randomHex32()
+    bundle.recoverAfter = now + RECOVERY_WINDOW_SECONDS
+    delete bundle.settlement
+    delete bundle.settlementTxHash
+    saveBundle()
+  }
+  const factory = POC_DEPLOYMENTS.ethereum.exitSettlementFactory
   const poolFee = (flow.quote.exitPoolFee || 500) as 100 | 500 | 3000 | 10000
   const predicted = await predictSettlement({
     wallet,
@@ -250,15 +347,8 @@ async function ensureSettlement(wallet: BrowserWallet, flow: PublicFlow): Promis
   })
   bundle.settlement = predicted
   saveBundle()
-  const deployedCode = (await wallet.provider.request({
-    method: 'eth_getCode',
-    params: [predicted, 'latest'],
-  })) as string
-  if (deployedCode !== '0x') return
-  if (bundle.settlementTxHash) {
-    await waitForEthereumTransaction(wallet, bundle.settlementTxHash)
-    return
-  }
+  if (await hasCode(wallet, predicted)) return
+
   const created = await api.createSettlement({
     salt: bundle.salt,
     recipient: bundle.form.recipient as Address,
@@ -273,12 +363,28 @@ async function ensureSettlement(wallet: BrowserWallet, flow: PublicFlow): Promis
   bundle.settlementTxHash = created.txHash
   saveBundle()
   await waitForEthereumTransaction(wallet, created.txHash)
+  if (!(await hasCode(wallet, predicted))) {
+    throw new Error('The settlement transaction confirmed without code at the predicted address')
+  }
+}
+
+async function hasCode(wallet: BrowserWallet, address: Address): Promise<boolean> {
+  const code = (await wallet.provider.request({ method: 'eth_getCode', params: [address, 'latest'] })) as string
+  return typeof code === 'string' && code !== '0x'
+}
+
+function recordDeposit(txHash: string, privateAmount: bigint): void {
+  bundle.deposited = true
+  bundle.depositTxHash = txHash
+  bundle.privateAmount = privateAmount.toString()
+  bundle.depositedAt ??= new Date().toISOString()
+  saveBundle()
 }
 
 async function transition(
   flow: PublicFlow,
   phase: PublicFlow['phase'],
-  options: { txHash?: string; settlementAddress?: string; occurredAt?: string } = {},
+  options: { txHash?: string; occurredAt?: string } = {},
 ): Promise<PublicFlow> {
   const updated = await api.updateFlow(flow.id, requiredString(bundle.writeToken, 'recovery capability'), {
     phase,
@@ -305,17 +411,38 @@ function readBundle(): RecoveryBundle {
   const encoded = sessionStorage.getItem(STORAGE_KEY)
   if (!encoded) throw new Error('No recovery material was found in this tab')
   const value = JSON.parse(encoded) as RecoveryBundle
-  if (value.version !== 1) throw new Error('Unsupported recovery material version')
+  if (value.version !== 1 && value.version !== 2) throw new Error('Unsupported recovery material version')
+  seedFromHints(value)
   return value
+}
+
+/** Prefer what the stopped tab knew over what the (possibly stale) API record says. */
+function seedFromHints(value: RecoveryBundle): void {
+  const progress = value.progress ?? {}
+  const mintTxHash = value.mintTxHash ?? progress.inboundMintTxHash ?? value.sourceFlow.inboundMintTxHash
+  if (mintTxHash) value.mintTxHash = mintTxHash
+  const depositTxHash = value.depositTxHash ?? progress.depositTxHash ?? value.sourceFlow.poolDepositTxHash
+  if (depositTxHash) value.depositTxHash = depositTxHash
+  const depositedAt = value.depositedAt ?? progress.depositedAt ?? value.sourceFlow.privacyDepositConfirmedAt
+  if (depositedAt) value.depositedAt = depositedAt
+  if (!value.privateAmount && progress.privateAmount) value.privateAmount = progress.privateAmount
+  if (!value.salt && progress.salt) value.salt = progress.salt
+  if (!value.recoverAfter && progress.recoverAfter) value.recoverAfter = progress.recoverAfter
+  if (!value.settlement && progress.settlement) value.settlement = progress.settlement
+  if (!value.settlementTxHash && progress.settlementTxHash) value.settlementTxHash = progress.settlementTxHash
+  if (!value.exitTxHash && progress.exitTxHash) value.exitTxHash = progress.exitTxHash
+  if (!value.finalTxHash && progress.finalTxHash) value.finalTxHash = progress.finalTxHash
+  value.deposited = value.deposited ?? Boolean(value.depositTxHash)
 }
 
 function validateBundle(value: RecoveryBundle, restored: EphemeralIdentity): void {
   if (value.sourceFlow.starknetAccount.toLowerCase() !== restored.address.toLowerCase()) {
     throw new Error('Recovery account does not match the stopped flow')
   }
-  if (!value.sourceFlow.entryTxHash || !value.sourceFlow.inboundMintTxHash) {
-    throw new Error('The stopped flow did not complete its inbound bridge')
+  if (!value.sourceFlow.entryTxHash) {
+    throw new Error('The stopped flow has no Ethereum entry transaction; nothing left Ethereum')
   }
+  if (value.sourceFlow.phase === 'completed') throw new Error('The stopped flow already completed')
   if (!isAddress(value.form.recipient)) throw new Error('Recovery recipient is invalid')
   if (!['ETH', 'USDC', 'WBTC'].includes(value.form.outputToken as TokenSymbol)) {
     throw new Error('Recovery output token is invalid')

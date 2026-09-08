@@ -42,21 +42,42 @@ delay is therefore `max(user delay, proof readiness)`.
 - Requests a recipient-bound settlement only after the privacy delay.
 - Independently calls the factory's `predict` view and rejects a relayer response whose address
   does not match the exact recipient, output, slippage floor, fee tier, and recovery time.
+- Uses only the reviewed contract addresses compiled into the bundle (`POC_DEPLOYMENTS` in
+  `packages/shared`, mirrored from `deployments/*.json`) and refuses API configuration that names
+  other contracts.
+- Verifies every paymaster typed-data payload against the calls it requested before the account
+  signs it (starknet.js skips this check in `sponsored` mode), and rejects a private fee above the
+  compiled-in ceiling.
+- Keeps exit-side progress (deposit, settlement, exit and payout hashes) in the tab only, where the
+  same-tab recovery route can read it.
 - Keeps a `beforeunload` warning installed for the entire active flow.
 
-The browser never sends the Stark private key or privacy viewing key to the API.
+The browser never sends the Stark private key to the API. The privacy **viewing key is not
+confidential from the operator**: the SDK compiles it into every STRK20 proof request and every
+pool-indexer discovery request, and the API relays both in plaintext. The operator (and Starkscan,
+inherently) can therefore read this account's private notes but cannot spend them. A production
+deployment must route proving and discovery through OHTTP or an equivalent so the relay cannot read
+the bodies.
 
 ### Light API (`apps/api`)
 
 - Returns allow-listed mainnet configuration.
 - Quotes direct Uniswap V3 pools and current CCTP V2 fee ceilings.
-- Keeps POC flow progress in a short-lived, capability-protected Valkey store.
+- Keeps POC flow progress in a short-lived, capability-protected Valkey store. The record holds
+  entry-side data only; it never accepts the settlement address or any exit-side transaction hash,
+  because each of those resolves on-chain to the recipient and would join it to the entry.
+- Opens sponsored Starknet actions for a flow only after verifying, on Ethereum, that the flow's
+  entry transaction is a successful `PrivacyEntryRouter.start` from the flow's sender that burns to
+  the flow's Starknet account.
 - Adapts the authenticated, asynchronous Starkscan STRK20 proof relay to the privacy SDK. The API
   forwards only explicit-block Invoke proofs, never exposes the operator key, and persists every
   one-time terminal response before delivering it to the browser.
 - Proxies only the configured Starknet RPC, discovery, and AVNU paymaster origins, keeping provider
   credentials server-side. AVNU sponsorship additionally requires a per-flow capability and is
   restricted to the expected account, lifecycle phase, CCTP receiver, privacy pool, and fee token.
+  Both `paymaster_buildTransaction` and `paymaster_executeTransaction` are validated, including the
+  calls inside the signed SNIP-9 typed data, the entrypoint selectors, the `apply_actions` target,
+  and the account deployment class hash.
 - Proxies Circle attestations.
 - Sponsors deterministic settlement creation and the permissionless final `settle()` call.
 
@@ -134,8 +155,11 @@ balance to the supplied 256-bit Ethereum settlement recipient, validates the fin
 fee bound, and uses Circle's forwarding hook.
 
 `ExitSettlement` has immutable recipient, output asset, Uniswap pool fee, minimum output, and
-recovery time. Anyone may call `settle()`. If a delayed swap cannot meet the fixed slippage floor,
-the recipient can receive USDC through `recoverAsUsdc()` after the one-hour recovery window.
+recovery time. Anyone may call `settle()`; it sweeps whatever USDC the contract holds at that moment
+and may be called again if more arrives, so an early dust deposit cannot lock the real CCTP mint.
+Swap outputs require a non-zero minimum. If a delayed swap cannot meet the fixed slippage floor,
+anyone can move the USDC to the recipient through `recoverAsUsdc()` after the one-hour recovery
+window.
 
 ## POC failure and recovery model
 
@@ -146,9 +170,13 @@ the recipient can receive USDC through `recoverAsUsdc()` after the one-hour reco
 - After CCTP mint but before settlement: `settle()` is permissionless; after the recovery time,
   `recoverAsUsdc()` bypasses a stale swap quote.
 
-The current UI preserves secrets after an error but has no reload-resume path. Closing or reloading
-an incomplete flow can permanently strand assets. A production design must replace random
-memory-only keys with audited recoverable derivation or a tightly scoped, revocable delegation.
+The current UI preserves secrets after an error and offers a same-tab recovery route
+(`apps/web/public/recover-current-tab.js` then `recovery.html`) that derives the resume point from
+the chain: it claims an unclaimed attestation, deploys an undeployed account, deposits public USDC,
+or discovers an existing private note and continues to the exit. There is still no reload-resume
+path: closing or reloading an incomplete flow can permanently strand assets. A production design
+must replace random memory-only keys with audited recoverable derivation or a tightly scoped,
+revocable delegation.
 
 ## Provenance
 
@@ -162,7 +190,12 @@ Do not open the route button until all of these are complete:
 
 1. Audit the Solidity and Cairo contracts, including token edge cases and CCTP fee behavior.
 2. Deploy `PrivacyEntryRouter`, `ExitSettlementFactory`, and `CctpExitAnonymizer` with the pinned
-   mainnet addresses; verify source and constructor arguments on explorers.
+   mainnet addresses; verify source and constructor arguments on explorers. The
+   `ExitSettlementFactory` recorded in `deployments/ethereum-mainnet.json` predates the removal of
+   the lockable `settled` flag and must be redeployed from this revision before any new flow; after
+   redeploying, update that file, `POC_DEPLOYMENTS` in `packages/shared`, and
+   `ETHEREUM_EXIT_SETTLEMENT_FACTORY`. Browser and canary refuse configuration that differs from
+   the pinned deployments.
 3. Confirm the deployed privacy-pool class hash is compatible with the vendored SDK.
 4. Configure funded, capped relayer and AVNU sponsor policies; never use an unrestricted treasury
    key.
