@@ -355,10 +355,7 @@ async function main() {
           identity,
           privateAmount: BigInt(required(state.privateAmount, 'private amount')),
           settlement: required(state.settlement, 'settlement address'),
-          cctpExitAnonymizer: required(
-            (await api.config()).starknet.cctpExitAnonymizer,
-            'Starknet CCTP exit anonymizer',
-          ),
+          cctpExitAnonymizer: POC_DEPLOYMENTS.starknet.cctpExitAnonymizer,
           cctpMaxFee: BigInt(state.quote.outboundCctpMaxFeeBase),
           capability: capability(state),
         })
@@ -762,8 +759,8 @@ async function submitEntry(args: {
   walletClient: ReturnType<typeof createWalletClient>
 }): Promise<Hex> {
   const { state, account, ethereumClient, walletClient } = args
-  const config = await (await import('../../web/src/api.js')).api.config()
-  const entryRouter = required(config.ethereum.entryRouter, 'Ethereum entry router') as Address
+  // Preflight already checked the backend names these; use the pinned values from here on.
+  const entryRouter: Address = POC_DEPLOYMENTS.ethereum.entryRouter
   const amount = BigInt(state.quote.inputAmountBase)
 
   if (state.inputToken !== 'ETH') {
@@ -823,9 +820,8 @@ async function predictSettlement(args: {
   recoverAfter: number
   ethereumClient: ReturnType<typeof createPublicClient>
 }): Promise<Address> {
-  const config = await (await import('../../web/src/api.js')).api.config()
   return args.ethereumClient.readContract({
-    address: required(config.ethereum.exitSettlementFactory, 'Ethereum settlement factory') as Address,
+    address: POC_DEPLOYMENTS.ethereum.exitSettlementFactory,
     abi: SETTLEMENT_FACTORY_ABI,
     functionName: 'predict',
     args: [

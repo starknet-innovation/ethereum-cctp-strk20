@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { CHAIN, STARKNET_SELECTORS } from '@privacy-round-trip/shared'
-import { buildServer, type EntryVerifier } from './server.js'
+import { CHAIN, OUTSIDE_EXECUTION_TYPES, STARKNET_SELECTORS } from '@privacy-round-trip/shared'
+import { encodeAbiParameters, encodeEventTopics, keccak256, stringToHex, type Hex } from 'viem'
+import { buildServer, matchEntryEvent, type EntryVerifier } from './server.js'
 import type { ApiConfig } from './config.js'
 import type { QuoteDependencies } from './quote.js'
 
@@ -34,7 +35,18 @@ const dependencies: QuoteDependencies = {
   cctpMaxFee: async (_source, _destination, _amount, forward) => (forward ? 1_500_000n : 100_000n),
 }
 
-const verifiedEntry: EntryVerifier = async () => true
+/** Records which flow each entry burn was started for, the way the router event would. */
+function burnRegistry() {
+  const burns = new Map<string, Hex>()
+  const verifier: EntryVerifier = async ({ txHash }) => {
+    const flowId = burns.get(txHash.toLowerCase())
+    return flowId ? { flowId } : undefined
+  }
+  return {
+    verifier,
+    register: (txHash: string, flowId: string) => burns.set(txHash.toLowerCase(), keccak256(stringToHex(flowId))),
+  }
+}
 const SENDER = '0x3333333333333333333333333333333333333333'
 const ACCOUNT = '0x456'
 const PUBLIC_KEY = '0x77'
@@ -62,7 +74,7 @@ const receiveMessageCall: TestCall = {
 
 function typedData(calls: TestCall[]) {
   return {
-    types: {},
+    types: OUTSIDE_EXECUTION_TYPES['2'],
     primaryType: 'OutsideExecution',
     domain: { name: 'Account.execute_from_outside', version: '2', chainId: CHAIN.starknet.chainId, revision: '1' },
     message: {
@@ -75,7 +87,7 @@ function typedData(calls: TestCall[]) {
   }
 }
 
-async function bridgingFlow(app: Awaited<ReturnType<typeof buildServer>>) {
+async function bridgingFlow(app: Awaited<ReturnType<typeof buildServer>>, registry: ReturnType<typeof burnRegistry>) {
   const quote = await app.inject({
     method: 'POST',
     url: '/v1/quotes',
@@ -92,6 +104,7 @@ async function bridgingFlow(app: Awaited<ReturnType<typeof buildServer>>) {
     },
   })
   const access = created.json()
+  registry.register(ENTRY_TX, access.flow.id)
   for (const phase of ['entry-submitted', 'bridging-to-starknet']) {
     const transition = await app.inject({
       method: 'PATCH',
@@ -121,7 +134,8 @@ function recordingFetch() {
 
 describe('api', () => {
   it('creates a private-capability-protected flow and enforces lifecycle order', async () => {
-    const app = await buildServer(config, { quoteDependencies: dependencies, entryVerifier: verifiedEntry })
+    const registry = burnRegistry()
+    const app = await buildServer(config, { quoteDependencies: dependencies, entryVerifier: registry.verifier })
     const quoteResponse = await app.inject({
       method: 'POST',
       url: '/v1/quotes',
@@ -160,6 +174,7 @@ describe('api', () => {
     })
     expect(skipped.statusCode).toBe(409)
 
+    registry.register(`0x${'44'.repeat(32)}`, created.flow.id)
     for (const [phase, txHash] of [
       ['entry-submitted', `0x${'44'.repeat(32)}`],
       ['bridging-to-starknet', undefined],
@@ -190,7 +205,7 @@ describe('api', () => {
       quoteDependencies: dependencies,
       entryVerifier: async (args) => {
         seen.push(args)
-        return false
+        return undefined
       },
     })
     const quote = await app.inject({
@@ -231,8 +246,9 @@ describe('api', () => {
     await app.close()
   })
 
-  it('allows one live flow per entry burn and lets only a failed flow hand it over', async () => {
-    const app = await buildServer(config, { quoteDependencies: dependencies, entryVerifier: verifiedEntry })
+  it('binds an entry burn to the flow it names and lets only that flow\'s capability hand it over', async () => {
+    const registry = burnRegistry()
+    const app = await buildServer(config, { quoteDependencies: dependencies, entryVerifier: registry.verifier })
     const open = async () => {
       const quote = await app.inject({
         method: 'POST',
@@ -262,25 +278,81 @@ describe('api', () => {
       })
 
     const first = await open()
-    const second = await open()
+    registry.register(ENTRY_TX, first.flow.id)
+    const stranger = await open()
+    // A stranger who copied the public sender/account from the mempool is not the flow the burn names.
+    const strangerFirst = await patch(stranger, { phase: 'bridging-to-starknet' })
+    expect(strangerFirst.statusCode).toBe(403)
+    expect(strangerFirst.json().error).toMatch(/different flow/)
     expect((await patch(first, { phase: 'bridging-to-starknet' })).statusCode).toBe(200)
-    // Same burn, second live flow: refused.
-    expect((await patch(second, { phase: 'bridging-to-starknet' })).statusCode).toBe(409)
+    // Nor can the stranger get in later, with or without a forged release.
+    expect((await patch(stranger, { phase: 'bridging-to-starknet' })).statusCode).toBe(403)
+    expect(
+      (await patch(stranger, { phase: 'bridging-to-starknet', release: { flowId: first.flow.id, token: 'x'.repeat(43) } })).statusCode,
+    ).toBe(403)
     // The holder keeps its claim: the lifecycle rejects the duplicate transition, the next one works.
-    expect((await patch(first, { phase: 'bridging-to-starknet' })).statusCode).toBe(409)
+    const duplicate = await patch(first, { phase: 'bridging-to-starknet' })
+    expect(duplicate.statusCode).toBe(409)
+    expect(duplicate.json().error).toMatch(/Invalid flow transition/)
     expect((await patch(first, { phase: 'starknet-funded', txHash: '0xabc' })).statusCode).toBe(200)
 
-    // Once the holder fails, exactly one of the recovery flows racing for the burn takes it over.
-    expect((await patch(first, { phase: 'failed', failureReason: 'tab closed' })).statusCode).toBe(200)
-    const third = await open()
+    // Recovery flows present the stopped flow's own capability. Exactly one of two racing takes over,
+    // and the stopped flow is retired even though it never wrote its own failed marker.
+    const release = { flowId: first.flow.id, token: first.writeToken }
+    const recoveryA = await open()
+    const recoveryB = await open()
     const raced = await Promise.all([
-      patch(second, { phase: 'bridging-to-starknet' }),
-      patch(third, { phase: 'bridging-to-starknet' }),
+      patch(recoveryA, { phase: 'bridging-to-starknet', release }),
+      patch(recoveryB, { phase: 'bridging-to-starknet', release }),
     ])
     expect(raced.map((response) => response.statusCode).sort()).toEqual([200, 409])
-    const fourth = await open()
-    expect((await patch(fourth, { phase: 'bridging-to-starknet' })).statusCode).toBe(409)
+    const retired = await app.inject({ method: 'GET', url: `/v1/flows/${first.flow.id}`, headers: { 'x-flow-token': first.writeToken } })
+    expect(retired.json().phase).toBe('failed')
+    // While the winner is live, a further recovery attempt with the same capability is refused.
+    const recoveryC = await open()
+    expect((await patch(recoveryC, { phase: 'bridging-to-starknet', release })).statusCode).toBe(409)
+    // A release for a flow the burn does not name is worthless even with a valid token.
+    expect(
+      (await patch(recoveryC, { phase: 'bridging-to-starknet', release: { flowId: stranger.flow.id, token: stranger.writeToken } })).statusCode,
+    ).toBe(403)
     await app.close()
+  })
+
+  it('matches the router event by address, sender, recipient and returns its flow id', () => {
+    const router = config.ETHEREUM_ENTRY_ROUTER as `0x${string}`
+    const flowId = keccak256(stringToHex('f_' + 'a'.repeat(32)))
+    const abi = [
+      {
+        type: 'event',
+        name: 'EntryStarted',
+        inputs: [
+          { name: 'flowId', type: 'bytes32', indexed: true },
+          { name: 'sender', type: 'address', indexed: true },
+          { name: 'inputAsset', type: 'uint8', indexed: true },
+          { name: 'inputAmount', type: 'uint256', indexed: false },
+          { name: 'usdcBurned', type: 'uint256', indexed: false },
+          { name: 'starknetRecipient', type: 'uint256', indexed: false },
+        ],
+      },
+    ] as const
+    const log = (address: `0x${string}`, sender: `0x${string}`, recipient: bigint) => ({
+      address,
+      topics: encodeEventTopics({ abi, eventName: 'EntryStarted', args: { flowId, sender, inputAsset: 0 } }),
+      data: encodeAbiParameters(
+        [{ type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }],
+        [10n ** 16n, 25_000_000n, recipient],
+      ),
+    })
+    const receipt = (logs: ReturnType<typeof log>[], status = 'success') => ({ status, logs: logs as never })
+
+    expect(matchEntryEvent(receipt([log(router, SENDER, BigInt(ACCOUNT))]), router, SENDER, ACCOUNT)).toEqual({ flowId })
+    // Case-insensitive address and sender, felt-normalised recipient.
+    expect(matchEntryEvent(receipt([log(router, SENDER, BigInt(ACCOUNT))]), router.toLowerCase() as `0x${string}`, SENDER.toUpperCase().replace('0X', '0x'), '0x0456')).toEqual({ flowId })
+    // Wrong emitter, sender, or recipient, or a reverted receipt: no match.
+    expect(matchEntryEvent(receipt([log('0x9999999999999999999999999999999999999999', SENDER, BigInt(ACCOUNT))]), router, SENDER, ACCOUNT)).toBeUndefined()
+    expect(matchEntryEvent(receipt([log(router, '0x4444444444444444444444444444444444444444', BigInt(ACCOUNT))]), router, SENDER, ACCOUNT)).toBeUndefined()
+    expect(matchEntryEvent(receipt([log(router, SENDER, 0x999n)]), router, SENDER, ACCOUNT)).toBeUndefined()
+    expect(matchEntryEvent(receipt([log(router, SENDER, BigInt(ACCOUNT))], 'reverted'), router, SENDER, ACCOUNT)).toBeUndefined()
   })
 
   it('reports missing deployment configuration without pretending to be ready', async () => {
@@ -345,10 +417,11 @@ describe('api', () => {
 
   it('keeps the AVNU key server-side and scopes sponsorship to a flow capability', async () => {
     const { requests, fetchImpl } = recordingFetch()
+    const registry = burnRegistry()
     const app = await buildServer(config, {
       quoteDependencies: dependencies,
       fetchImpl,
-      entryVerifier: verifiedEntry,
+      entryVerifier: registry.verifier,
     })
     const payload = {
       jsonrpc: '2.0',
@@ -367,7 +440,7 @@ describe('api', () => {
     const denied = await app.inject({ method: 'POST', url: '/proxy/paymaster', payload })
     expect(denied.statusCode).toBe(404)
 
-    const access = await bridgingFlow(app)
+    const access = await bridgingFlow(app, registry)
     const headers = { 'x-flow-id': access.flow.id, 'x-flow-token': access.writeToken }
 
     const allowed = await app.inject({
@@ -401,12 +474,13 @@ describe('api', () => {
 
   it('validates the calls the account actually signs on paymaster_executeTransaction', async () => {
     const { requests, fetchImpl } = recordingFetch()
+    const registry = burnRegistry()
     const app = await buildServer(config, {
       quoteDependencies: dependencies,
       fetchImpl,
-      entryVerifier: verifiedEntry,
+      entryVerifier: registry.verifier,
     })
-    const access = await bridgingFlow(app)
+    const access = await bridgingFlow(app, registry)
     const headers = { 'x-flow-id': access.flow.id, 'x-flow-token': access.writeToken }
     const execute = (calls: TestCall[], extra: Record<string, unknown> = {}) => ({
       jsonrpc: '2.0',
@@ -446,6 +520,18 @@ describe('api', () => {
     ;(wrongChain.params.transaction.invoke.typed_data.domain as { chainId: string }).chainId = '0x534e5f5345504f4c4941'
     expect((await app.inject({ method: 'POST', url: '/proxy/paymaster', headers, payload: wrongChain })).statusCode).toBe(403)
 
+    // A benign `Calls` next to a malicious lowercase `calls` (the array a v1 schema would hash).
+    const mixed = execute([receiveMessageCall])
+    ;(mixed.params.transaction.invoke.typed_data.message as Record<string, unknown>).calls = [
+      { to: CHAIN.starknet.usdc, selector: STARKNET_SELECTORS.approve, calldata_len: 1, calldata: ['0xbad'] },
+    ]
+    expect((await app.inject({ method: 'POST', url: '/proxy/paymaster', headers, payload: mixed })).statusCode).toBe(403)
+
+    // Non-canonical types could move the signed calls elsewhere; refuse them outright.
+    const foreignTypes = execute([receiveMessageCall])
+    ;(foreignTypes.params.transaction.invoke.typed_data as Record<string, unknown>).types = {}
+    expect((await app.inject({ method: 'POST', url: '/proxy/paymaster', headers, payload: foreignTypes })).statusCode).toBe(403)
+
     const genuine = await app.inject({ method: 'POST', url: '/proxy/paymaster', headers, payload: execute([receiveMessageCall]) })
     expect(genuine.statusCode).toBe(200)
 
@@ -468,12 +554,13 @@ describe('api', () => {
 
   it('pins the private deposit to the pool approve and the pool apply_actions call', async () => {
     const { requests, fetchImpl } = recordingFetch()
+    const registry = burnRegistry()
     const app = await buildServer(config, {
       quoteDependencies: dependencies,
       fetchImpl,
-      entryVerifier: verifiedEntry,
+      entryVerifier: registry.verifier,
     })
-    const access = await bridgingFlow(app)
+    const access = await bridgingFlow(app, registry)
     const headers = { 'x-flow-id': access.flow.id, 'x-flow-token': access.writeToken }
     for (const phase of ['starknet-funded', 'pool-depositing']) {
       const transition = await app.inject({

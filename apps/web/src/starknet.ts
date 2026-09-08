@@ -5,6 +5,8 @@ import {
   MAX_PRIVATE_FEE_BASE,
   MAX_PRIVATE_FEE_BPS,
   feltEquals,
+  parseOutsideExecution,
+  sameOutsideCall,
 } from '@privacy-round-trip/shared'
 import {
   Account,
@@ -259,14 +261,16 @@ export async function sponsoredPrivacyDeposit(args: {
   const signature = stark.signatureToHexArray(
     await args.identity.signer.signMessage(built.typed_data, args.identity.address),
   )
-  const response = await executeInvokeAndApply({
-    identity: args.identity,
-    typedData: built.typed_data,
-    signature,
-    callAndProof: result.callAndProof as CallAndProof,
-    mode,
-    capability: args.capability,
-  })
+  const response = await clearingCheckpointOnFailure(proofCheckpoint, () =>
+    executeInvokeAndApply({
+      identity: args.identity,
+      typedData: built.typed_data,
+      signature,
+      callAndProof: result.callAndProof as CallAndProof,
+      mode,
+      capability: args.capability,
+    }),
+  )
   const submitted = { txHash: response.transaction_hash, privateAmount: args.amount - fee, fee }
   args.onTransactionSubmitted?.(submitted)
   proofCheckpoint.clear()
@@ -329,17 +333,19 @@ export async function sponsoredPrivacyExit(args: {
   }, proofCheckpoint)
 
   const callAndProof = result.callAndProof as CallAndProof
-  const response = await paymasterRpc<{ transaction_hash: string }>('paymaster_executeTransaction', {
-    transaction: {
-      type: 'apply_action',
-      apply_action: {
-        apply_actions_call: toPaymasterCall(callAndProof.call),
-        proof: callAndProof.proof.data,
-        proof_facts: callAndProof.proof.proofFacts.map(felt),
+  const response = await clearingCheckpointOnFailure(proofCheckpoint, () =>
+    paymasterRpc<{ transaction_hash: string }>('paymaster_executeTransaction', {
+      transaction: {
+        type: 'apply_action',
+        apply_action: {
+          apply_actions_call: toPaymasterCall(callAndProof.call),
+          proof: callAndProof.proof.data,
+          proof_facts: callAndProof.proof.proofFacts.map(felt),
+        },
       },
-    },
-    parameters: { version: '0x1', fee_mode: mode },
-  }, args.capability)
+      parameters: { version: '0x1', fee_mode: mode },
+    }, args.capability),
+  )
   args.onTransactionSubmitted?.(response.transaction_hash)
   proofCheckpoint.clear()
   await waitForSuccessfulTransaction(providerForApp(), response.transaction_hash)
@@ -347,39 +353,25 @@ export async function sponsoredPrivacyExit(args: {
 }
 
 /**
- * Verify that SNIP-9 typed data (v1 or v2 layout) authorises exactly the requested calls and
- * targets Starknet mainnet. Throws otherwise; nothing is signed until this passes.
+ * Verify that SNIP-9 typed data authorises exactly the requested calls. The payload must be the
+ * canonical v1 or v2 schema for Starknet mainnet (strict types, domain and keys), so the calls
+ * checked here are the calls the signature covers. Throws otherwise; nothing is signed until this
+ * passes.
  */
 export function assertTypedDataCalls(typedData: unknown, expected: PaymasterCall[]): void {
-  const data = record(typedData)
-  const domain = record(data?.domain)
-  const message = record(data?.message)
-  if (!data || !domain || !message) throw new Error('Paymaster returned malformed typed data')
-  if (domain.chainId !== 'SN_MAIN' && !feltEquals(domain.chainId, CHAIN.starknet.chainId)) {
-    throw new Error('Paymaster typed data targets another Starknet chain')
+  const parsed = parseOutsideExecution(typedData, CHAIN.starknet.chainId)
+  if (!parsed) {
+    throw new Error('Paymaster typed data is not canonical SNIP-9 outside execution for Starknet mainnet')
   }
-  const calls = Array.isArray(message.Calls)
-    ? message.Calls
-    : Array.isArray(message.calls)
-      ? message.calls
-      : undefined
-  if (!calls || calls.length !== expected.length) {
+  if (parsed.calls.length !== expected.length) {
     throw new Error(
-      `Paymaster typed data carries ${calls?.length ?? 0} call(s); expected ${expected.length}`,
+      `Paymaster typed data carries ${parsed.calls.length} call(s); expected ${expected.length}`,
     )
   }
-  calls.forEach((entry, index) => {
-    const call = record(entry)
-    const want = expected[index]!
-    const calldata = call?.Calldata ?? call?.calldata
-    const matches =
-      call !== undefined &&
-      feltEquals(call.To ?? call.to, want.to) &&
-      feltEquals(call.Selector ?? call.selector, want.selector) &&
-      Array.isArray(calldata) &&
-      calldata.length === want.calldata.length &&
-      calldata.every((value, position) => feltEquals(value, want.calldata[position]))
-    if (!matches) throw new Error(`Paymaster typed data call ${index} does not match the requested call`)
+  parsed.calls.forEach((call, index) => {
+    if (!sameOutsideCall(call, expected[index]!)) {
+      throw new Error(`Paymaster typed data call ${index} does not match the requested call`)
+    }
   })
 }
 
@@ -468,6 +460,19 @@ async function withFreshProvingBlock<T extends { execute(options: { provingBlock
     }
   }
   throw lastError
+}
+
+/**
+ * A proof consumed by a failed submission is spent: keeping its checkpoint would pin the next
+ * attempt to the same, ever older proving block.
+ */
+async function clearingCheckpointOnFailure<T>(checkpoint: ProofCheckpointStore, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (error) {
+    checkpoint.clear()
+    throw error
+  }
 }
 
 function memoryProofCheckpoint(): ProofCheckpointStore {

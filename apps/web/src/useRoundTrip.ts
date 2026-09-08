@@ -172,7 +172,7 @@ export function useRoundTrip() {
         })
         currentFlow = created.flow
         writeToken = created.writeToken
-        note({ flowId: created.flow.id })
+        note({ flowId: created.flow.id, writeToken: created.writeToken })
         const paymasterCapability = { flowId: created.flow.id, flowToken: created.writeToken }
         setFlow(currentFlow)
 

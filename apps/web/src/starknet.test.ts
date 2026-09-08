@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { CHAIN, MAX_PRIVATE_FEE_BASE, STARKNET_SELECTORS } from '@privacy-round-trip/shared'
-import { hash } from 'starknet'
+import {
+  CHAIN,
+  MAX_PRIVATE_FEE_BASE,
+  OUTSIDE_EXECUTION_TYPES,
+  STARKNET_SELECTORS,
+} from '@privacy-round-trip/shared'
+import { OutsideExecutionTypesV1, OutsideExecutionTypesV2, hash } from 'starknet'
 import { assertTypedDataCalls, validateFee, type PaymasterCall } from './starknet.js'
 
 const approve: PaymasterCall = {
@@ -11,7 +16,7 @@ const approve: PaymasterCall = {
 
 function v2(calls: PaymasterCall[], chainId: string = CHAIN.starknet.chainId) {
   return {
-    types: {},
+    types: OUTSIDE_EXECUTION_TYPES['2'],
     primaryType: 'OutsideExecution',
     domain: { name: 'Account.execute_from_outside', version: '2', chainId, revision: '1' },
     message: {
@@ -26,7 +31,7 @@ function v2(calls: PaymasterCall[], chainId: string = CHAIN.starknet.chainId) {
 
 function v1(calls: PaymasterCall[]) {
   return {
-    types: {},
+    types: OUTSIDE_EXECUTION_TYPES['1'],
     primaryType: 'OutsideExecution',
     domain: { name: 'Account.execute_from_outside', version: '1', chainId: CHAIN.starknet.chainId },
     message: {
@@ -71,8 +76,24 @@ describe('paymaster typed data verification', () => {
     expect(() =>
       assertTypedDataCalls(v2([{ ...approve, calldata: ['0xbad', '0x64', '0x0'] }]), [approve]),
     ).toThrow(/call 0/)
-    expect(() => assertTypedDataCalls(v2([approve], '0x534e5f5345504f4c4941'), [approve])).toThrow(/another Starknet chain/)
-    expect(() => assertTypedDataCalls({ message: {} }, [approve])).toThrow(/malformed/)
+    expect(() => assertTypedDataCalls(v2([approve], '0x534e5f5345504f4c4941'), [approve])).toThrow(/not canonical/)
+    expect(() => assertTypedDataCalls({ message: {} }, [approve])).toThrow(/not canonical/)
+  })
+
+  it('rejects a payload that carries both layouts or non-canonical types', () => {
+    const drain: PaymasterCall = { to: CHAIN.starknet.usdc, selector: hash.getSelectorFromName('transfer'), calldata: ['0xbad'] }
+    const mixedV1 = v1([drain]) as { message: Record<string, unknown> }
+    mixedV1.message.Calls = [{ To: approve.to, Selector: approve.selector, Calldata: approve.calldata }]
+    expect(() => assertTypedDataCalls(mixedV1, [approve])).toThrow(/not canonical/)
+    const mixedV2 = v2([approve]) as { message: Record<string, unknown> }
+    mixedV2.message.calls = [{ to: drain.to, selector: drain.selector, calldata_len: 1, calldata: drain.calldata }]
+    expect(() => assertTypedDataCalls(mixedV2, [approve])).toThrow(/not canonical/)
+    expect(() => assertTypedDataCalls({ ...v2([approve]), types: {} }, [approve])).toThrow(/not canonical/)
+  })
+
+  it('pins the canonical SNIP-9 schemas starknet.js signs against', () => {
+    expect(JSON.parse(JSON.stringify(OUTSIDE_EXECUTION_TYPES['1']))).toEqual(OutsideExecutionTypesV1)
+    expect(JSON.parse(JSON.stringify(OUTSIDE_EXECUTION_TYPES['2']))).toEqual(OutsideExecutionTypesV2)
   })
 })
 

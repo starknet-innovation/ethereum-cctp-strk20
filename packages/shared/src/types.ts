@@ -90,12 +90,22 @@ export const createFlowSchema = z
   })
   .strict()
 
+export const flowIdSchema = z.string().regex(/^f_[0-9a-f]{32}$/)
+
+/**
+ * Presented on the `bridging-to-starknet` transition by a recovery flow: the id and write
+ * capability of the stopped flow whose id the entry burn names on-chain. Proves the caller
+ * controls that flow, so a stranger who merely observed the burn cannot take it over.
+ */
+export const entryReleaseSchema = z.object({ flowId: flowIdSchema, token: z.string().min(32).max(512) }).strict()
+
 export const flowUpdateSchema = z
   .object({
     phase: flowPhaseSchema,
     txHash: hashSchema.optional(),
     failureReason: z.string().min(1).max(500).optional(),
     occurredAt: z.string().datetime().optional(),
+    release: entryReleaseSchema.optional(),
   })
   .strict()
   .superRefine((update, context) => {
@@ -104,6 +114,13 @@ export const flowUpdateSchema = z
         code: z.ZodIssueCode.custom,
         path: ['txHash'],
         message: 'Exit-side transaction hashes are not stored server-side',
+      })
+    }
+    if (update.release && update.phase !== 'bridging-to-starknet') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['release'],
+        message: 'An entry release only accompanies the bridging-to-starknet transition',
       })
     }
   })

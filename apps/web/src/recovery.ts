@@ -29,7 +29,9 @@ import {
 } from './starkscanProofProvider.js'
 import {
   connectRabby,
+  ethereumTransactionStatus,
   predictSettlement,
+  usdcBalanceAt,
   waitForEthereumTransaction,
   waitForUsdcAt,
   type BrowserWallet,
@@ -175,6 +177,16 @@ async function run(): Promise<void> {
 
       update('Creating the recipient-bound Ethereum settlement…')
       await ensureSettlement(wallet, flow)
+      if (bundle.exitTxHash && !(await starknetTransactionSucceeded(bundle.exitTxHash, 12))) {
+        // The hint was recorded at submission time. If the note is still unspent the exit never
+        // landed and must be resubmitted; if it is gone the exit landed and the receipt is lagging.
+        const remaining = await privateUsdcBalance(identity)
+        if (remaining > 0n) {
+          delete bundle.exitTxHash
+          bundle.privateAmount = remaining.toString()
+          saveBundle()
+        }
+      }
       if (!bundle.exitTxHash) {
         update('Generating the private exit proof and starting CCTP back to Ethereum…')
         bundle.exitTxHash = await sponsoredPrivacyExit({
@@ -205,12 +217,32 @@ async function run(): Promise<void> {
 
     if (flow.phase === 'settling') {
       update(`USDC arrived. Relaying the final ${bundle.form.outputToken} payout…`)
-      if (!bundle.finalTxHash) {
-        const final = await api.settle(requiredString(bundle.settlement, 'settlement address') as Address)
-        bundle.finalTxHash = final.txHash
-        saveBundle()
+      const settlement = requiredString(bundle.settlement, 'settlement address') as Address
+      if (bundle.finalTxHash) {
+        // Recorded at submission time. A reverted relay is resubmitted; a pending one is awaited
+        // (bounded), and only if it never lands is it dropped and resubmitted.
+        const status = await ethereumTransactionStatus(wallet, bundle.finalTxHash)
+        if (status === 'reverted') {
+          delete bundle.finalTxHash
+          saveBundle()
+        } else if (status === 'unknown') {
+          try {
+            await waitForEthereumTransaction(wallet, bundle.finalTxHash, 5 * 60_000)
+          } catch {
+            delete bundle.finalTxHash
+            saveBundle()
+          }
+        }
       }
-      await waitForEthereumTransaction(wallet, bundle.finalTxHash)
+      if (!bundle.finalTxHash) {
+        // Settlement sweeps its balance; an empty contract means the payout already happened.
+        if ((await usdcBalanceAt(wallet, settlement)) > 0n) {
+          const final = await api.settle(settlement)
+          bundle.finalTxHash = final.txHash
+          saveBundle()
+          await waitForEthereumTransaction(wallet, final.txHash)
+        }
+      }
       flow = await transition(flow, 'completed')
     }
 
@@ -250,7 +282,7 @@ async function recoveryFlow(): Promise<PublicFlow> {
     const latest = await api.getFlow(bundle.recoveryFlow.id, bundle.writeToken)
     bundle.recoveryFlow = latest
     saveBundle()
-    return latest
+    return walkToBridging(latest)
   }
 
   update('Creating a fresh, account-scoped recovery capability…')
@@ -271,13 +303,33 @@ async function recoveryFlow(): Promise<PublicFlow> {
   bundle.recoveryFlow = created.flow
   bundle.writeToken = created.writeToken
   saveBundle()
+  return walkToBridging(created.flow)
+}
 
-  let flow = created.flow
-  flow = await transition(flow, 'entry-submitted', {
-    txHash: requiredString(bundle.sourceFlow.entryTxHash, 'original Ethereum entry transaction'),
-  })
-  flow = await transition(flow, 'bridging-to-starknet')
-  if (!bundle.deposited) return flow
+/**
+ * Walk a recovery flow from creation to `bridging-to-starknet`, then as far as the known deposit
+ * state allows. Re-entrant: a flow left behind by an earlier interrupted walk resumes here.
+ */
+async function walkToBridging(initial: PublicFlow): Promise<PublicFlow> {
+  let flow = initial
+  if (flow.phase === 'prepared' || flow.phase === 'allowance-required') {
+    flow = await transition(flow, 'entry-submitted', {
+      txHash: requiredString(bundle.sourceFlow.entryTxHash, 'original Ethereum entry transaction'),
+    })
+  }
+  if (flow.phase === 'entry-submitted') {
+    // The burn names the stopped flow on-chain; its own capability proves this tab may reuse it.
+    const token = bundle.progress?.writeToken
+    if (!token) {
+      throw new Error(
+        'This tab did not capture the stopped flow\'s capability, so the API cannot hand its entry over. Keep the tab open and contact the operator.',
+      )
+    }
+    flow = await transition(flow, 'bridging-to-starknet', {
+      release: { flowId: bundle.sourceFlow.id, token },
+    })
+  }
+  if (!bundle.deposited || flow.phase !== 'bridging-to-starknet') return flow
   flow = await transition(flow, 'starknet-funded', bundle.mintTxHash ? { txHash: bundle.mintTxHash } : {})
   flow = await transition(flow, 'pool-depositing')
   return transition(flow, 'privacy-delay', {
@@ -339,6 +391,13 @@ async function recoverableUsdcAmount(): Promise<bigint> {
 async function completeInbound(flow: PublicFlow, capability: PaymasterCapability): Promise<PublicFlow> {
   update('Checking the bridged USDC on Starknet…')
   let balance = await starknetUsdcBalance(identity.address)
+  if (balance === 0n && !bundle.deposited && bundle.mintTxHash) {
+    // A mint hash recorded at submission time may belong to a reverted or dropped transaction.
+    if (!(await starknetTransactionSucceeded(bundle.mintTxHash, 12))) {
+      delete bundle.mintTxHash
+      saveBundle()
+    }
+  }
   if (balance === 0n && !bundle.deposited && !bundle.mintTxHash) {
     update('Waiting for Circle attestation and claiming USDC on Starknet…')
     const attested = await waitForCircleAttestation(
@@ -414,14 +473,26 @@ async function ensureSettlement(wallet: BrowserWallet, flow: PublicFlow): Promis
   saveBundle()
   if (await hasCode(wallet, predicted)) return
 
-  const created = await api.createSettlement({
-    salt: bundle.salt,
-    recipient: bundle.form.recipient as Address,
-    outputToken: bundle.form.outputToken,
-    minimumOutput: flow.quote.minimumOutputAmountBase,
-    poolFee,
-    recoverAfter: bundle.recoverAfter,
-  })
+  let created: { settlement: Address; txHash: Hex }
+  try {
+    created = await api.createSettlement({
+      salt: bundle.salt,
+      recipient: bundle.form.recipient as Address,
+      outputToken: bundle.form.outputToken,
+      minimumOutput: flow.quote.minimumOutputAmountBase,
+      poolFee,
+      recoverAfter: bundle.recoverAfter,
+    })
+  } catch (error) {
+    // Most likely a salt the stopped tab already spent with other parameters (DuplicateSalt) or a
+    // recovery time the relayer's simulation rejected. Fresh parameters make the next retry clean.
+    bundle.salt = randomHex32()
+    bundle.recoverAfter = Math.floor(Date.now() / 1_000) + RECOVERY_WINDOW_SECONDS
+    delete bundle.settlement
+    delete bundle.settlementTxHash
+    saveBundle()
+    throw error
+  }
   if (created.settlement.toLowerCase() !== predicted.toLowerCase()) {
     throw new Error('The settlement relayer returned an unexpected deterministic address')
   }
@@ -449,7 +520,7 @@ function recordDeposit(txHash: string, privateAmount: bigint): void {
 async function transition(
   flow: PublicFlow,
   phase: PublicFlow['phase'],
-  options: { txHash?: string; occurredAt?: string } = {},
+  options: { txHash?: string; occurredAt?: string; release?: { flowId: string; token: string } } = {},
 ): Promise<PublicFlow> {
   const updated = await api.updateFlow(flow.id, requiredString(bundle.writeToken, 'recovery capability'), {
     phase,

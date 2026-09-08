@@ -10,6 +10,8 @@ export const RECOVERY_PROGRESS_KIND = 'privacy-round-trip-progress' as const
 export interface RecoveryProgress {
   kind: typeof RECOVERY_PROGRESS_KIND
   flowId?: string
+  /** The stopped flow's own write capability, so recovery can release it before taking its burn over. */
+  writeToken?: string
   entryTxHash?: string
   inboundMintTxHash?: string
   depositTxHash?: string

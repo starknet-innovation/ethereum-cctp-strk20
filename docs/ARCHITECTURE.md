@@ -46,8 +46,9 @@ delay is therefore `max(user delay, proof readiness)`.
   `packages/shared`, mirrored from `deployments/*.json`) and refuses API configuration that names
   other contracts.
 - Verifies every paymaster typed-data payload against the calls it requested before the account
-  signs it (starknet.js skips this check in `sponsored` mode), and rejects a private fee above the
-  compiled-in ceiling.
+  signs it (starknet.js skips this check in `sponsored` mode). Only the canonical SNIP-9 v1 or v2
+  schema for Starknet mainnet is accepted, with exact types, domain and keys, so the calls that are
+  checked are the calls the signature covers. Rejects a private fee above the compiled-in ceiling.
 - Keeps exit-side progress (deposit, settlement, exit and payout hashes) in the tab only, where the
   same-tab recovery route can read it.
 - Keeps a `beforeunload` warning installed for the entire active flow.
@@ -68,7 +69,13 @@ the bodies.
   because each of those resolves on-chain to the recipient and would join it to the entry.
 - Opens sponsored Starknet actions for a flow only after verifying, on Ethereum, that the flow's
   entry transaction is a successful `PrivacyEntryRouter.start` from the flow's sender that burns to
-  the flow's Starknet account.
+  the flow's Starknet account. The burn also names a flow id on-chain, and sender and account are
+  public in the mempool, so they never authorise a flow by themselves: the flow must be the one
+  named, or present the named flow's write capability (same-tab recovery carries it). Each burn is
+  then bound to one live flow through an atomic compare-and-swap; a recovery takeover retires the
+  stopped flow.
+- Relays `settle()` only for settlements holding at least 1 USDC, since the sweep-style settlement
+  would otherwise let anyone spend relayer gas by sending dust to a public settlement address.
 - Adapts the authenticated, asynchronous Starkscan STRK20 proof relay to the privacy SDK. The API
   forwards only explicit-block Invoke proofs, never exposes the operator key, and persists every
   one-time terminal response before delivering it to the browser.
@@ -76,8 +83,8 @@ the bodies.
   credentials server-side. AVNU sponsorship additionally requires a per-flow capability and is
   restricted to the expected account, lifecycle phase, CCTP receiver, privacy pool, and fee token.
   Both `paymaster_buildTransaction` and `paymaster_executeTransaction` are validated, including the
-  calls inside the signed SNIP-9 typed data, the entrypoint selectors, the `apply_actions` target,
-  and the account deployment class hash.
+  calls inside the signed SNIP-9 typed data (canonical schema only, mixed layouts rejected), the
+  entrypoint selectors, the `apply_actions` target, and the account deployment class hash.
 - Proxies Circle attestations.
 - Sponsors deterministic settlement creation and the permissionless final `settle()` call.
 

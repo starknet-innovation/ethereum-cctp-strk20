@@ -57,6 +57,7 @@ try {
       delayMinutes: form.delayMinutes,
     },
     progress: {
+      ...(progress.writeToken ? { writeToken: progress.writeToken } : {}),
       ...(progress.entryTxHash ? { entryTxHash: progress.entryTxHash } : {}),
       ...(progress.inboundMintTxHash ? { inboundMintTxHash: progress.inboundMintTxHash } : {}),
       ...(progress.depositTxHash ? { depositTxHash: progress.depositTxHash } : {}),
