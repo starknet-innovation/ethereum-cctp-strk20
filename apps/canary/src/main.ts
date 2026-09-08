@@ -209,6 +209,10 @@ async function main() {
       log('PREFLIGHT PASS: no transaction was submitted; resume this journal to execute the canary')
       return
     }
+    if (state.stage === 'prepared') {
+      state = await refreshPreparedFlow(state, api)
+      save(state)
+    }
     const identity = restoreIdentity(state.identity)
 
     if (state.stage === 'prepared') {
@@ -629,6 +633,50 @@ async function preflight(args: {
     if (flow.phase === 'failed') throw new Error(`Backend flow is terminal: ${flow.failureReason ?? 'failed'}`)
   }
   log('Preflight passed: backend ready, chain ID 1, deployments present, signer is an EOA')
+}
+
+async function refreshPreparedFlow(
+  state: CanaryState,
+  api: typeof import('../../web/src/api.js')['api'],
+): Promise<CanaryState> {
+  const freshQuote = await api.quote({
+    inputToken: state.inputToken,
+    outputToken: state.outputToken,
+    amount: state.amount,
+    slippageBps: 100,
+  })
+  if (
+    BigInt(freshQuote.minimumBridgeAmountBase) < BigInt(state.quote.minimumBridgeAmountBase) ||
+    BigInt(freshQuote.minimumOutputAmountBase) < BigInt(state.quote.minimumOutputAmountBase)
+  ) {
+    throw new Error(
+      'Fresh quote is worse than the reviewed preflight minimum; run a new preflight instead',
+    )
+  }
+  const amount = BigInt(freshQuote.inputAmountBase)
+  const minimum = BigInt(freshQuote.minimumOutputAmountBase)
+  const lossBps = Number(((amount - minimum) * 10_000n) / amount)
+  if (lossBps > state.maxLossBps) {
+    throw new Error(
+      `Fresh quote loss is ${lossBps} bps, above the ${state.maxLossBps} bps canary limit`,
+    )
+  }
+  const created = await api.createFlow({
+    quoteId: freshQuote.quoteId,
+    ethereumSender: state.walletAddress,
+    starknetAccount: state.identity.address,
+    delayMinutes: state.delayMinutes,
+  })
+  log(
+    `Fresh execution quote accepted: minimum ${formatUnits(minimum, TOKENS[state.outputToken].decimals)} ${state.outputToken}; flow ${created.flow.id}`,
+  )
+  return {
+    ...state,
+    quote: freshQuote,
+    flowId: created.flow.id,
+    writeToken: created.writeToken,
+    updatedAt: new Date().toISOString(),
+  }
 }
 
 function assertBackendConfig(config: Awaited<ReturnType<typeof import('../../web/src/api.js')['api']['config']>>) {
