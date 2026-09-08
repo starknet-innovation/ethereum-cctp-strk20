@@ -40,7 +40,7 @@ h1 em { font-family: Georgia, 'Times New Roman', serif; font-weight: 500; }
 .trust-strip i { width: 4px; height: 4px; background: var(--orange); border-radius: 50%; }
 
 .workspace { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(360px, .95fr); border: 1px solid var(--ink); box-shadow: 9px 9px 0 var(--ink); }
-.route-card, .status-card { min-height: 640px; padding: clamp(25px, 3vw, 44px); background: #faf9f5; }
+.route-card, .status-card { min-width: 0; min-height: 640px; padding: clamp(25px, 3vw, 44px); background: #faf9f5; }
 .route-card { border-right: 1px solid var(--ink); }
 .status-card { background: var(--ink); color: var(--paper); display: flex; flex-direction: column; }
 .card-head { display: flex; justify-content: space-between; gap: 15px; align-items: center; padding-bottom: 27px; border-bottom: 1px solid currentColor; }
@@ -49,18 +49,19 @@ h1 em { font-family: Georgia, 'Times New Roman', serif; font-weight: 500; }
 .step-no { font: 500 10px 'DM Mono', monospace; border: 1px solid currentColor; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; }
 .wallet-pill { border: 1px solid var(--ink); background: transparent; padding: 9px 13px; border-radius: 100px; font: 500 11px 'DM Mono', monospace; }
 .wallet-pill.connect { background: var(--lime); }
-fieldset { border: 0; padding: 28px 0 0; margin: 0; }
+fieldset { min-width: 0; border: 0; padding: 28px 0 0; margin: 0; }
 label > span, .amount-field > span { display: block; margin-bottom: 10px; font: 500 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .09em; }
 .amount-field { display: block; border-bottom: 1px solid var(--line); padding: 4px 0 19px; }
-.amount-field > div { display: flex; align-items: center; gap: 16px; }
+.amount-field > div { display: flex; min-width: 0; align-items: center; gap: 16px; }
 .amount-field input, .amount-field output { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: clamp(36px, 4vw, 57px); letter-spacing: -.055em; }
 .amount-field select { border: 1px solid var(--ink); border-radius: 100px; padding: 10px 34px 10px 14px; background: transparent; font-weight: 700; }
 .amount-field.receive output { color: rgba(16,44,37,.48); }
 .route-line { height: 42px; display: flex; align-items: center; gap: 12px; }
 .route-line span { font: 500 18px 'DM Mono', monospace; }
 .route-line i { flex: 1; height: 1px; background: var(--line); }
-.field-grid { display: grid; grid-template-columns: 1.45fr .7fr; gap: 18px; margin: 29px 0; }
-.field-grid > label > input, .delay-input { width: 100%; height: 52px; border: 1px solid var(--ink); border-radius: 2px; background: transparent; }
+.field-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, .7fr); gap: 18px; margin: 29px 0; }
+.field-grid > label { min-width: 0; }
+.field-grid > label > input, .delay-input { width: 100%; min-width: 0; height: 52px; border: 1px solid var(--ink); border-radius: 2px; background: transparent; }
 .field-grid > label > input { padding: 0 14px; }
 .address-input { font: 12px 'DM Mono', monospace; }
 .delay-input { display: flex; align-items: center; }
