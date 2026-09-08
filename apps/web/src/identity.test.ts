@@ -5,6 +5,7 @@ import {
   createEphemeralIdentity,
   createViewingKey,
   isCanonicalViewingKey,
+  restoreEphemeralIdentity,
 } from './identity.js'
 
 describe('ephemeral Starknet identity', () => {
@@ -31,5 +32,22 @@ describe('ephemeral Starknet identity', () => {
     }
     expect(isCanonicalViewingKey(0n)).toBe(false)
     expect(isCanonicalViewingKey(MAX_VIEWING_KEY + 1n)).toBe(false)
+  })
+
+  it('restores and validates a serialized recovery identity', () => {
+    const identity = createEphemeralIdentity()
+    const restored = restoreEphemeralIdentity({
+      address: identity.address,
+      classHash: identity.classHash,
+      salt: identity.salt,
+      publicKey: identity.publicKey,
+      privateKey: identity.privateKey,
+      viewingKey: identity.viewingKey.toString(),
+    })
+
+    expect(restored.address).toBe(identity.address)
+    expect(restored.publicKey).toBe(identity.publicKey)
+    expect(restored.privateKey).toBe(identity.privateKey)
+    expect(restored.viewingKey).toBe(identity.viewingKey)
   })
 })

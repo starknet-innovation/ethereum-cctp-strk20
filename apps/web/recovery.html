@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#102c25" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>Round Trip Recovery</title>
+  </head>
+  <body>
+    <main class="recovery-shell">
+      <section class="recovery-card" aria-live="polite">
+        <div class="recovery-kicker">MAINNET RECOVERY</div>
+        <h1>Keep this tab open.</h1>
+        <p id="recovery-status">Loading the session-scoped recovery material…</p>
+        <div class="recovery-progress"><i id="recovery-dot" class="pulse"></i><span id="recovery-detail">Starting safely.</span></div>
+        <button id="recovery-retry" type="button" hidden>Retry from the last confirmed step</button>
+      </section>
+    </main>
+    <script type="module" src="/src/recovery.ts"></script>
+  </body>
+</html>

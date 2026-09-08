@@ -1,0 +1,25 @@
+:root {
+  color: #f2f0e9;
+  background: #102c25;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-synthesis: none;
+  --ink: #102c25;
+  --paper: #f2f0e9;
+  --lime: #cffc68;
+  --orange: #ff6d3a;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button { font: inherit; cursor: pointer; }
+.recovery-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.recovery-card { width: min(720px, 100%); border: 1px solid var(--paper); padding: clamp(30px, 7vw, 72px); box-shadow: 9px 9px 0 var(--orange); }
+.recovery-kicker { margin-bottom: 22px; color: var(--lime); font: 600 11px 'DM Mono', monospace; letter-spacing: .14em; }
+h1 { margin: 0; font-size: clamp(48px, 8vw, 88px); line-height: .9; letter-spacing: -.065em; }
+#recovery-status { margin: 34px 0 26px; max-width: 560px; font-size: 17px; line-height: 1.55; color: rgba(242,240,233,.72); }
+.recovery-progress { min-height: 58px; border-top: 1px solid rgba(242,240,233,.25); border-bottom: 1px solid rgba(242,240,233,.25); padding: 18px 0; display: flex; align-items: flex-start; gap: 12px; font: 11px/1.6 'DM Mono', monospace; }
+.recovery-progress i { flex: none; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: var(--lime); }
+.recovery-progress i.failed { background: var(--orange); }
+#recovery-retry { width: 100%; height: 54px; margin-top: 24px; border: 1px solid var(--lime); color: var(--ink); background: var(--lime); font-weight: 750; }
+@keyframes pulse { 50% { opacity: .35; transform: scale(.7); } }
+.pulse { animation: pulse 1.3s infinite; }
