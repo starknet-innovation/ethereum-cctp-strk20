@@ -231,6 +231,53 @@ describe('api', () => {
     await app.close()
   })
 
+  it('allows one live flow per entry burn and lets only a failed flow hand it over', async () => {
+    const app = await buildServer(config, { quoteDependencies: dependencies, entryVerifier: verifiedEntry })
+    const open = async () => {
+      const quote = await app.inject({
+        method: 'POST',
+        url: '/v1/quotes',
+        payload: { inputToken: 'ETH', outputToken: 'USDC', amount: '1', slippageBps: 100 },
+      })
+      const created = await app.inject({
+        method: 'POST',
+        url: '/v1/flows',
+        payload: { quoteId: quote.json().quoteId, ethereumSender: SENDER, starknetAccount: ACCOUNT, delayMinutes: 5 },
+      })
+      const access = created.json() as { flow: { id: string }; writeToken: string }
+      await app.inject({
+        method: 'PATCH',
+        url: `/v1/flows/${access.flow.id}`,
+        headers: { 'x-flow-token': access.writeToken },
+        payload: { phase: 'entry-submitted', txHash: ENTRY_TX },
+      })
+      return access
+    }
+    const patch = (access: { flow: { id: string }; writeToken: string }, payload: Record<string, unknown>) =>
+      app.inject({
+        method: 'PATCH',
+        url: `/v1/flows/${access.flow.id}`,
+        headers: { 'x-flow-token': access.writeToken },
+        payload,
+      })
+
+    const first = await open()
+    const second = await open()
+    expect((await patch(first, { phase: 'bridging-to-starknet' })).statusCode).toBe(200)
+    // Same burn, second live flow: refused.
+    expect((await patch(second, { phase: 'bridging-to-starknet' })).statusCode).toBe(409)
+    // The holder keeps its claim: the lifecycle rejects the duplicate transition, the next one works.
+    expect((await patch(first, { phase: 'bridging-to-starknet' })).statusCode).toBe(409)
+    expect((await patch(first, { phase: 'starknet-funded', txHash: '0xabc' })).statusCode).toBe(200)
+
+    // Once the holder fails, a recovery flow may take the burn over exactly once.
+    expect((await patch(first, { phase: 'failed', failureReason: 'tab closed' })).statusCode).toBe(200)
+    expect((await patch(second, { phase: 'bridging-to-starknet' })).statusCode).toBe(200)
+    const third = await open()
+    expect((await patch(third, { phase: 'bridging-to-starknet' })).statusCode).toBe(409)
+    await app.close()
+  })
+
   it('reports missing deployment configuration without pretending to be ready', async () => {
     const app = await buildServer({
       HOST: '127.0.0.1',

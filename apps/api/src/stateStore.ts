@@ -4,6 +4,8 @@ export interface StateStore {
   get(key: string): Promise<string | undefined>
   set(key: string, value: string, ttlSeconds: number): Promise<void>
   reserveCounter(key: string, amount: number, limit: number, ttlSeconds: number): Promise<number | undefined>
+  /** Atomically set `value` if the key is absent. Returns the value now held (existing or new). */
+  claim(key: string, value: string, ttlSeconds: number): Promise<string>
   ping(): Promise<void>
   close(): Promise<void>
 }
@@ -42,6 +44,13 @@ export class MemoryStateStore implements StateStore {
     const next = current + amount
     this.values.set(key, { value: String(next), expiresAt: Date.now() + ttlSeconds * 1_000 })
     return next
+  }
+
+  async claim(key: string, value: string, ttlSeconds: number): Promise<string> {
+    const current = await this.get(key)
+    if (current !== undefined) return current
+    await this.set(key, value, ttlSeconds)
+    return value
   }
 
   async ping(): Promise<void> {}
@@ -109,6 +118,23 @@ export class ValkeyStateStore implements StateStore {
     )
     const next = Number(result)
     return next < 0 ? undefined : next
+  }
+
+  async claim(key: string, value: string, ttlSeconds: number): Promise<string> {
+    await this.connect()
+    const result = await this.client.eval(
+      [
+        "local current = redis.call('GET', KEYS[1])",
+        'if current then return current end',
+        "redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])",
+        'return ARGV[1]',
+      ].join('\n'),
+      1,
+      key,
+      value,
+      String(ttlSeconds),
+    )
+    return String(result)
   }
 
   async ping(): Promise<void> {

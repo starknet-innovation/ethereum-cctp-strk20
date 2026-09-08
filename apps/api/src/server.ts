@@ -313,6 +313,12 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
       if (!current.entryTxHash || !(await verifiedEntry(entryVerifier, current))) {
         return reply.code(409).send({ error: 'Entry transaction could not be verified on Ethereum' })
       }
+      // One live flow per burn. The verified sender/account match alone would let a single burn
+      // open sponsorship for any number of flows; recovery legitimately reuses a burn, but only
+      // once the flow that previously held it has failed.
+      if (!(await claimEntryBurn(flowStore, stateStore, current))) {
+        return reply.code(409).send({ error: 'Entry transaction is already in use by an active flow' })
+      }
     }
     try {
       const flow = await flowStore.update(request.params.id, token, parsed.data)
@@ -986,6 +992,20 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined
+}
+
+async function claimEntryBurn(
+  flowStore: FlowStore,
+  stateStore: StateStore,
+  flow: PublicFlow,
+): Promise<boolean> {
+  const key = `qrt:entry-claim:${(flow.entryTxHash ?? '').toLowerCase()}`
+  const holder = await stateStore.claim(key, flow.id, FlowStore.ttlSeconds)
+  if (holder === flow.id) return true
+  const previous = await flowStore.peek(holder)
+  if (previous && previous.phase !== 'failed') return false
+  await stateStore.set(key, flow.id, FlowStore.ttlSeconds)
+  return true
 }
 
 async function verifiedEntry(verifier: EntryVerifier, flow: PublicFlow): Promise<boolean> {
