@@ -34,6 +34,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { mainnet } from 'viem/chains'
 import { Signer } from 'starknet'
 import type { EphemeralIdentity } from '../../web/src/identity.js'
+import { bindLocalAccount } from './localSigner.js'
 
 const DEFAULT_API_URL =
   'https://et-3a2b9d82b0504dbe9e8af1be336446d6.ecs.eu-west-3.on.aws'
@@ -746,7 +747,9 @@ async function submitEntry(args: {
         functionName: 'approve',
         args: [entryRouter, amount],
       })
-      const approval = await walletClient.writeContract(request)
+      const approval = await walletClient.writeContract(
+        bindLocalAccount(request, required(walletClient.account, 'local signer')),
+      )
       log(`${state.inputToken} approval submitted: ${approval}`)
       await waitForEthereumTransaction(ethereumClient, approval)
     }
@@ -771,7 +774,9 @@ async function submitEntry(args: {
     args: [intent],
     value: state.inputToken === 'ETH' ? amount : 0n,
   })
-  const hash = await walletClient.writeContract(request)
+  const hash = await walletClient.writeContract(
+    bindLocalAccount(request, required(walletClient.account, 'local signer')),
+  )
   log(`Ethereum entry submitted: ${hash}`)
   return hash
 }
