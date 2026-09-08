@@ -646,15 +646,20 @@ async function refreshPreparedFlow(
     slippageBps: 100,
   })
   if (
-    BigInt(freshQuote.minimumBridgeAmountBase) < BigInt(state.quote.minimumBridgeAmountBase) ||
-    BigInt(freshQuote.minimumOutputAmountBase) < BigInt(state.quote.minimumOutputAmountBase)
+    BigInt(freshQuote.estimatedBridgeAmountBase) < BigInt(state.quote.minimumBridgeAmountBase) ||
+    BigInt(freshQuote.estimatedOutputAmountBase) < BigInt(state.quote.minimumOutputAmountBase)
   ) {
     throw new Error(
       'Fresh quote is worse than the reviewed preflight minimum; run a new preflight instead',
     )
   }
-  const amount = BigInt(freshQuote.inputAmountBase)
-  const minimum = BigInt(freshQuote.minimumOutputAmountBase)
+  const executionQuote: RouteQuote = {
+    ...freshQuote,
+    minimumBridgeAmountBase: state.quote.minimumBridgeAmountBase,
+    minimumOutputAmountBase: state.quote.minimumOutputAmountBase,
+  }
+  const amount = BigInt(executionQuote.inputAmountBase)
+  const minimum = BigInt(executionQuote.minimumOutputAmountBase)
   const lossBps = Number(((amount - minimum) * 10_000n) / amount)
   if (lossBps > state.maxLossBps) {
     throw new Error(
@@ -672,7 +677,7 @@ async function refreshPreparedFlow(
   )
   return {
     ...state,
-    quote: freshQuote,
+    quote: executionQuote,
     flowId: created.flow.id,
     writeToken: created.writeToken,
     updatedAt: new Date().toISOString(),
