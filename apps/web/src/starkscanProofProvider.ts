@@ -11,19 +11,36 @@ import { constants } from 'starknet'
 
 const PROOF_TIMEOUT_MS = 30 * 60_000
 const DEFAULT_POLL_SECONDS = 10
+const THROTTLED_RETRY_SECONDS = 60
 const MIN_ATTESTATION_MARGIN_SECONDS = 60
 const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504])
+
+export interface ProofCheckpoint {
+  version: 1
+  provingBlockId: number
+  requestHash?: string
+  idempotencyKey?: string
+  job?: ProofRelaySubmission
+}
+
+export interface ProofCheckpointStore {
+  load(): ProofCheckpoint | undefined
+  save(checkpoint: ProofCheckpoint): void
+  clear(): void
+}
 
 export class StarkscanProofProvider implements ProofProviderInterface {
   private readonly defaults: ProvingServiceProofProvider
   private readonly proofsUrl: string
   private readonly fetchImpl: typeof fetch
+  private readonly checkpointStore: ProofCheckpointStore | undefined
 
   constructor(args: {
     apiBaseUrl: string
     rpcUrl: string
     poolAddress: string
     fetchImpl?: typeof fetch
+    checkpointStore?: ProofCheckpointStore
   }) {
     this.proofsUrl = `${args.apiBaseUrl.replace(/\/$/, '')}/v1/proofs`
     // Window.fetch is not a context-free function in every browser. Keeping the native function
@@ -31,6 +48,7 @@ export class StarkscanProofProvider implements ProofProviderInterface {
     // provider, which Chromium/WebKit reject with "Illegal invocation". Bind the implementation
     // once so native fetch always receives the global object as its receiver.
     this.fetchImpl = (args.fetchImpl ?? fetch).bind(globalThis)
+    this.checkpointStore = args.checkpointStore
     this.defaults = new ProvingServiceProofProvider(this.proofsUrl, constants.StarknetChainId.SN_MAIN, {
       nodeUrl: args.rpcUrl,
       poolAddress: args.poolAddress,
@@ -47,12 +65,33 @@ export class StarkscanProofProvider implements ProofProviderInterface {
 
   async prove(invocation: ProofInvocation, blockIdentifier?: ProvingBlockId): Promise<Proof> {
     const blockNumber = explicitBlockNumber(blockIdentifier)
-    const idempotencyKey = crypto.randomUUID()
-    let job = await this.submit(
-      { block_id: { block_number: blockNumber }, transaction: invocation },
-      idempotencyKey,
-    )
     const deadline = Date.now() + PROOF_TIMEOUT_MS
+    const body = { block_id: { block_number: blockNumber }, transaction: invocation }
+    const requestHash = await sha256(JSON.stringify(body))
+    const saved = this.checkpointStore?.load()
+    if (saved && saved.provingBlockId !== blockNumber) {
+      throw new Error('The saved Starkscan proof uses a different proving block; keep this tab open and retry')
+    }
+    if (saved?.requestHash && saved.requestHash !== requestHash) {
+      throw new Error('The saved Starkscan proof does not match the rebuilt private transaction')
+    }
+
+    const idempotencyKey = saved?.idempotencyKey ?? crypto.randomUUID()
+    const checkpoint: ProofCheckpoint = {
+      version: 1,
+      provingBlockId: blockNumber,
+      requestHash,
+      idempotencyKey,
+      ...(saved?.job ? { job: saved.job } : {}),
+    }
+    this.checkpointStore?.save(checkpoint)
+
+    let job = checkpoint.job
+    if (!job) {
+      job = await this.submit(body, idempotencyKey, deadline)
+      checkpoint.job = job
+      this.checkpointStore?.save(checkpoint)
+    }
 
     while (!job.terminal) {
       if (Date.now() >= deadline) {
@@ -60,16 +99,31 @@ export class StarkscanProofProvider implements ProofProviderInterface {
       }
       await sleep(pollDelayMs(job.pollAfterSeconds))
       job = await this.poll(job.jobId, job.pollToken, deadline)
+      checkpoint.job = job
+      this.checkpointStore?.save(checkpoint)
     }
 
-    if (job.status !== 'succeeded' || !job.result) throw proofJobError(job)
-    assertUsableAttestation(job.result)
+    if (job.status !== 'succeeded' || !job.result) {
+      this.checkpointStore?.clear()
+      throw proofJobError(job)
+    }
+    try {
+      assertUsableAttestation(job.result)
+    } catch (error) {
+      this.checkpointStore?.clear()
+      throw error
+    }
     return toSdkProof(job.result, invocation.sender_address)
   }
 
-  private async submit(body: unknown, idempotencyKey: string): Promise<ProofRelaySubmission> {
+  private async submit(
+    body: unknown,
+    idempotencyKey: string,
+    deadline: number,
+  ): Promise<ProofRelaySubmission> {
     let lastError: unknown
     for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (Date.now() >= deadline) throw lastError ?? new Error('Starkscan proof submission timed out')
       try {
         const response = await this.fetchImpl(this.proofsUrl, {
           method: 'POST',
@@ -79,18 +133,25 @@ export class StarkscanProofProvider implements ProofProviderInterface {
         })
         if (response.ok) return parseSubmission(await response.json())
         const error = await responseError(response)
-        if (!RETRYABLE_HTTP_STATUSES.has(response.status) || attempt === 3) throw error
+        if (isDailyBudgetError(error) || !RETRYABLE_HTTP_STATUSES.has(response.status) || attempt === 3) {
+          throw error
+        }
         lastError = error
       } catch (error) {
         lastError = error
         if (
           attempt === 3 ||
+          isDailyBudgetError(error) ||
           (error instanceof HttpError && !RETRYABLE_HTTP_STATUSES.has(error.status))
         ) {
           throw error
         }
       }
-      await sleep(retryDelayMs(lastError, Math.min(1_000 * 2 ** attempt, 8_000)))
+      const fallback =
+        lastError instanceof HttpError && lastError.status === 429
+          ? THROTTLED_RETRY_SECONDS * 1_000
+          : Math.min(1_000 * 2 ** attempt, 8_000)
+      await sleep(Math.min(retryDelayMs(lastError, fallback), Math.max(0, deadline - Date.now())))
     }
     throw lastError
   }
@@ -119,15 +180,18 @@ export class StarkscanProofProvider implements ProofProviderInterface {
   }
 }
 
-class HttpError extends Error {
+export class ProofApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
     readonly retryAfterMs?: number,
+    readonly code?: string,
   ) {
     super(message)
   }
 }
+
+class HttpError extends ProofApiError {}
 
 function explicitBlockNumber(blockIdentifier: ProvingBlockId | undefined): number {
   if (typeof blockIdentifier === 'number' || typeof blockIdentifier === 'bigint') {
@@ -199,9 +263,34 @@ function proofJobError(job: ProofRelayJob): Error {
 }
 
 async function responseError(response: Response): Promise<HttpError> {
-  const body = (await response.json().catch(() => undefined)) as { error?: unknown } | undefined
-  const message = typeof body?.error === 'string' ? body.error : `Proof API returned HTTP ${response.status}`
-  return new HttpError(response.status, message, parseRetryAfterMs(response.headers.get('retry-after')))
+  const body = await response.json().catch(() => undefined)
+  const detail = upstreamErrorDetail(body)
+  const message = detail?.text
+    ? `Starkscan proof API returned HTTP ${response.status}: ${detail.text}`
+    : `Starkscan proof API returned HTTP ${response.status}`
+  const retryAfterMs =
+    parseRetryAfterMs(response.headers.get('retry-after')) ??
+    (detail?.code === 'prover_daily_budget_exhausted' ? untilNextUtcDayMs() : undefined)
+  return new HttpError(response.status, message, retryAfterMs, detail?.code)
+}
+
+function upstreamErrorDetail(value: unknown): { text: string; code?: string } | undefined {
+  const body = optionalRecord(value)
+  if (!body) return undefined
+  if (typeof body.error === 'string') return { text: body.error }
+  const nested = optionalRecord(body.error)
+  const code = stringOrNumber(nested?.code ?? body.code)
+  const message = firstString(nested?.message, body.message, nested?.detail, body.detail)
+  if (code && message) return { text: `${code}: ${message}`, code }
+  if (code) return { text: code, code }
+  return message ? { text: message } : undefined
+}
+
+function isDailyBudgetError(error: unknown): boolean {
+  return (
+    error instanceof ProofApiError &&
+    (error.code === 'prover_daily_budget_exhausted' || /daily.+budget|budget.+exhausted/i.test(error.message))
+  )
 }
 
 function retryDelayMs(error: unknown, fallbackMs: number): number {
@@ -213,10 +302,20 @@ function retryDelayMs(error: unknown, fallbackMs: number): number {
 function parseRetryAfterMs(value: string | null): number | undefined {
   if (!value) return undefined
   const seconds = Number(value)
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, 60_000)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, 24 * 60 * 60_000)
   const timestamp = Date.parse(value)
   if (!Number.isFinite(timestamp)) return undefined
-  return Math.min(Math.max(0, timestamp - Date.now()), 60_000)
+  return Math.min(Math.max(0, timestamp - Date.now()), 24 * 60 * 60_000)
+}
+
+function untilNextUtcDayMs(): number {
+  const now = new Date()
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1) - now.getTime()
+}
+
+async function sha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function pollDelayMs(value: number | undefined): number {
@@ -233,6 +332,20 @@ function record(value: unknown): Record<string, unknown> {
     throw new Error('Proof API returned malformed JSON')
   }
   return value as Record<string, unknown>
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === 'string' && value.length > 0)
+}
+
+function stringOrNumber(value: unknown): string | undefined {
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined
 }
 
 function formatDetail(value: unknown): string {

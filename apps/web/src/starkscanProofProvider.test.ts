@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ProofInvocation } from '@starkware-libs/starknet-privacy-sdk'
-import { StarkscanProofProvider } from './starkscanProofProvider.js'
+import {
+  ProofApiError,
+  StarkscanProofProvider,
+  type ProofCheckpoint,
+  type ProofCheckpointStore,
+} from './starkscanProofProvider.js'
 
 describe('StarkscanProofProvider', () => {
   afterEach(() => vi.useRealTimers())
@@ -110,9 +115,14 @@ describe('StarkscanProofProvider', () => {
   it('honors Retry-After and retries a throttled proof submission', async () => {
     vi.useFakeTimers()
     let calls = 0
+    let firstRequestReady!: () => void
+    const firstRequest = new Promise<void>((resolve) => {
+      firstRequestReady = resolve
+    })
     const fetchImpl: typeof fetch = async () => {
       calls += 1
       if (calls === 1) {
+        firstRequestReady()
         return new Response('{}', {
           status: 429,
           headers: { 'content-type': 'application/json', 'retry-after': '1' },
@@ -140,10 +150,119 @@ describe('StarkscanProofProvider', () => {
       12_446_898,
     )
 
+    await firstRequest
     await vi.advanceTimersByTimeAsync(1_000)
 
     await expect(proofPromise).resolves.toMatchObject({ data: 'proof-after-backoff' })
     expect(calls).toBe(2)
+  })
+
+  it('resumes a journaled proof job without submitting a duplicate', async () => {
+    let checkpoint: ProofCheckpoint | undefined
+    let simulateReload = true
+    const checkpointStore: ProofCheckpointStore = {
+      load: () => checkpoint,
+      save: (value) => {
+        checkpoint = structuredClone(value)
+        if (simulateReload && value.job) throw new Error('simulated tab reload')
+      },
+      clear: () => {
+        checkpoint = undefined
+      },
+    }
+    const requests: string[] = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      requests.push(init?.method ?? 'GET')
+      if (init?.method === 'POST') {
+        return new Response(
+          JSON.stringify({
+            jobId: 'prv_9f2c1ab34de56789012345ae',
+            status: 'queued',
+            terminal: false,
+            pollAfterSeconds: 1,
+            pollToken: 'd'.repeat(64),
+          }),
+          { status: 202, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      expect(String(input)).toContain('prv_9f2c1ab34de56789012345ae')
+      return new Response(
+        JSON.stringify({
+          jobId: 'prv_9f2c1ab34de56789012345ae',
+          status: 'succeeded',
+          terminal: true,
+          result: { proof: 'resumed-proof', proof_facts: [], l2_to_l1_messages: [] },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      )
+    }
+    const invocation = {
+      type: 'INVOKE',
+      sender_address: '0x123',
+      calldata: [],
+    } as unknown as ProofInvocation
+
+    const interrupted = new StarkscanProofProvider({
+      apiBaseUrl: 'https://api.example',
+      rpcUrl: 'https://rpc.example',
+      poolAddress: '0x123',
+      fetchImpl,
+      checkpointStore,
+    })
+    await expect(interrupted.prove(invocation, 12_446_898)).rejects.toThrow('simulated tab reload')
+
+    simulateReload = false
+    const resumed = new StarkscanProofProvider({
+      apiBaseUrl: 'https://api.example',
+      rpcUrl: 'https://rpc.example',
+      poolAddress: '0x123',
+      fetchImpl,
+      checkpointStore,
+    })
+    const proofPromise = resumed.prove(invocation, 12_446_898)
+
+    await expect(proofPromise).resolves.toMatchObject({ data: 'resumed-proof' })
+    expect(requests).toEqual(['POST', 'GET'])
+  })
+
+  it('surfaces daily proof exhaustion without burst retries', async () => {
+    let calls = 0
+    const provider = new StarkscanProofProvider({
+      apiBaseUrl: 'https://api.example',
+      rpcUrl: 'https://rpc.example',
+      poolAddress: '0x123',
+      fetchImpl: async () => {
+        calls += 1
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 'prover_daily_budget_exhausted',
+              message: 'Daily proof budget exhausted',
+            },
+          }),
+          {
+            status: 429,
+            headers: { 'content-type': 'application/json', 'retry-after': '3600' },
+          },
+        )
+      },
+    })
+
+    const error = await provider
+      .prove(
+        { type: 'INVOKE', sender_address: '0x123', calldata: [] } as unknown as ProofInvocation,
+        12_446_898,
+      )
+      .catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ProofApiError)
+    expect(error).toMatchObject({
+      status: 429,
+      code: 'prover_daily_budget_exhausted',
+      retryAfterMs: 3_600_000,
+    })
+    expect((error as Error).message).toContain('Daily proof budget exhausted')
+    expect(calls).toBe(1)
   })
 
   it('fails closed without an explicit block number', async () => {

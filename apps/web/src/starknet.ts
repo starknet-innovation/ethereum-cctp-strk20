@@ -11,7 +11,11 @@ import {
 } from 'starknet'
 import { api, type CircleMessage } from './api.js'
 import type { EphemeralIdentity } from './identity.js'
-import { StarkscanProofProvider } from './starkscanProofProvider.js'
+import {
+  StarkscanProofProvider,
+  type ProofCheckpoint,
+  type ProofCheckpointStore,
+} from './starkscanProofProvider.js'
 
 const RPC_URL = `${api.baseUrl}/proxy/starknet-rpc`
 const PAYMASTER_URL = `${api.baseUrl}/proxy/paymaster`
@@ -133,6 +137,8 @@ export async function sponsoredPrivacyDeposit(args: {
   identity: EphemeralIdentity
   amount: bigint
   capability: PaymasterCapability
+  proofCheckpoint?: ProofCheckpointStore
+  onTransactionSubmitted?: (result: { txHash: string; privateAmount: bigint }) => void
 }): Promise<{ txHash: string; privateAmount: bigint }> {
   if (args.amount <= 0n) throw new Error('No Starknet USDC is available to shield')
   const mode = privateFeeMode()
@@ -155,8 +161,9 @@ export async function sponsoredPrivacyDeposit(args: {
   }, args.capability)
   const fee = validateFee(built.fee_action, CHAIN.starknet.usdc, args.amount)
 
+  const proofCheckpoint = args.proofCheckpoint ?? memoryProofCheckpoint()
   const result = await withFreshProvingBlock(() => {
-    const builder = poolClient(args.identity)
+    const builder = poolClient(args.identity, proofCheckpoint)
       .build({
         autoRegister: true,
         autoSetup: true,
@@ -170,7 +177,7 @@ export async function sponsoredPrivacyDeposit(args: {
         .withdraw({ amount: fee, recipient: built.fee_action.recipient }),
     )
     return builder
-  })
+  }, proofCheckpoint)
 
   const signature = stark.signatureToHexArray(
     await args.identity.signer.signMessage(built.typed_data, args.identity.address),
@@ -183,8 +190,11 @@ export async function sponsoredPrivacyDeposit(args: {
     mode,
     capability: args.capability,
   })
+  const submitted = { txHash: response.transaction_hash, privateAmount: args.amount - fee }
+  args.onTransactionSubmitted?.(submitted)
+  proofCheckpoint.clear()
   await waitForSuccessfulTransaction(providerForApp(), response.transaction_hash)
-  return { txHash: response.transaction_hash, privateAmount: args.amount - fee }
+  return submitted
 }
 
 /** Spend the private note directly into the CCTP anonymizer and start the return bridge. */
@@ -195,6 +205,8 @@ export async function sponsoredPrivacyExit(args: {
   cctpExitAnonymizer: string
   cctpMaxFee: bigint
   capability: PaymasterCapability
+  proofCheckpoint?: ProofCheckpointStore
+  onTransactionSubmitted?: (txHash: string) => void
 }): Promise<string> {
   const mode = privateFeeMode()
   const built = await paymasterRpc<{ type: 'apply_action'; fee_action: FeeAction }>(
@@ -214,8 +226,9 @@ export async function sponsoredPrivacyExit(args: {
     throw new Error('Private balance is below the privacy and return-bridge fees')
   }
 
+  const proofCheckpoint = args.proofCheckpoint ?? memoryProofCheckpoint()
   const result = await withFreshProvingBlock(() => {
-    const builder = poolClient(args.identity)
+    const builder = poolClient(args.identity, proofCheckpoint)
       .build({
         autoDiscover: { notes: 'refresh', channels: 'refresh' },
         autoSelectNotes: 'all',
@@ -236,7 +249,7 @@ export async function sponsoredPrivacyExit(args: {
       ],
     }))
     return builder
-  })
+  }, proofCheckpoint)
 
   const callAndProof = result.callAndProof as CallAndProof
   const response = await paymasterRpc<{ transaction_hash: string }>('paymaster_executeTransaction', {
@@ -250,6 +263,8 @@ export async function sponsoredPrivacyExit(args: {
     },
     parameters: { version: '0x1', fee_mode: mode },
   }, args.capability)
+  args.onTransactionSubmitted?.(response.transaction_hash)
+  proofCheckpoint.clear()
   await waitForSuccessfulTransaction(providerForApp(), response.transaction_hash)
   return response.transaction_hash
 }
@@ -280,7 +295,7 @@ async function executeInvokeAndApply(args: {
   }, args.capability)
 }
 
-function poolClient(identity: EphemeralIdentity) {
+function poolClient(identity: EphemeralIdentity, checkpointStore: ProofCheckpointStore) {
   return createPrivateTransfers({
     account: { address: identity.address, signer: identity.signer },
     viewingKeyProvider: { getViewingKey: async () => identity.viewingKey },
@@ -288,6 +303,7 @@ function poolClient(identity: EphemeralIdentity) {
       apiBaseUrl: api.baseUrl,
       rpcUrl: RPC_URL,
       poolAddress: CHAIN.starknet.privacyPool,
+      checkpointStore,
     }),
     discoveryProvider: { url: DISCOVERY_URL },
     poolContractAddress: CHAIN.starknet.privacyPool,
@@ -296,11 +312,15 @@ function poolClient(identity: EphemeralIdentity) {
 
 async function withFreshProvingBlock<T extends { execute(options: { provingBlockId: number }): Promise<unknown> }>(
   makeBuilder: () => T,
+  checkpointStore: ProofCheckpointStore,
 ): Promise<any> {
   const provider = providerForApp()
   let lastError: unknown
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    const provingBlockId = Math.max(0, (await provider.getBlockNumber()) - PROVING_BLOCK_DEPTH)
+    const saved = checkpointStore.load()
+    const provingBlockId =
+      saved?.provingBlockId ?? Math.max(0, (await provider.getBlockNumber()) - PROVING_BLOCK_DEPTH)
+    if (!saved) checkpointStore.save({ version: 1, provingBlockId })
     try {
       return await makeBuilder().execute({ provingBlockId })
     } catch (error) {
@@ -310,6 +330,19 @@ async function withFreshProvingBlock<T extends { execute(options: { provingBlock
     }
   }
   throw lastError
+}
+
+function memoryProofCheckpoint(): ProofCheckpointStore {
+  let checkpoint: ProofCheckpoint | undefined
+  return {
+    load: () => checkpoint,
+    save: (value) => {
+      checkpoint = value
+    },
+    clear: () => {
+      checkpoint = undefined
+    },
+  }
 }
 
 async function paymasterRpc<T>(method: string, params: unknown, capability: PaymasterCapability): Promise<T> {

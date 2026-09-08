@@ -15,6 +15,11 @@ import {
   type PaymasterCapability,
 } from './starknet.js'
 import {
+  ProofApiError,
+  type ProofCheckpoint,
+  type ProofCheckpointStore,
+} from './starkscanProofProvider.js'
+import {
   connectRabby,
   predictSettlement,
   waitForEthereumTransaction,
@@ -41,6 +46,8 @@ interface RecoveryBundle {
   recoverAfter?: number
   exitTxHash?: string
   finalTxHash?: Hex
+  depositProof?: ProofCheckpoint
+  exitProof?: ProofCheckpoint
 }
 
 const status = requiredElement('recovery-status')
@@ -48,6 +55,7 @@ const detail = requiredElement('recovery-detail')
 const dot = requiredElement('recovery-dot')
 const retry = requiredButton('recovery-retry')
 let running = false
+let automaticRetry: number | undefined
 let bundle: RecoveryBundle
 let identity: EphemeralIdentity
 
@@ -71,6 +79,8 @@ try {
 
 async function run(): Promise<void> {
   if (running) return
+  if (automaticRetry !== undefined) window.clearTimeout(automaticRetry)
+  automaticRetry = undefined
   running = true
   retry.hidden = true
   dot.className = 'pulse'
@@ -84,11 +94,22 @@ async function run(): Promise<void> {
       const balance = await starknetUsdcBalance(identity.address)
       if (!bundle.depositTxHash) {
         if (balance <= 0n) throw new Error('No public USDC remains in the recovery account')
-        const deposit = await sponsoredPrivacyDeposit({ identity, amount: balance, capability })
+        const deposit = await sponsoredPrivacyDeposit({
+          identity,
+          amount: balance,
+          capability,
+          proofCheckpoint: proofCheckpoint('depositProof'),
+          onTransactionSubmitted: (submitted) => {
+            bundle.depositTxHash = submitted.txHash
+            bundle.privateAmount = submitted.privateAmount.toString()
+            saveBundle()
+          },
+        })
         bundle.depositTxHash = deposit.txHash
         bundle.privateAmount = deposit.privateAmount.toString()
         saveBundle()
       }
+      proofCheckpoint('depositProof').clear()
       flow = await transition(flow, 'privacy-delay', {
         txHash: requiredString(bundle.depositTxHash, 'privacy deposit transaction'),
         occurredAt: new Date().toISOString(),
@@ -115,9 +136,15 @@ async function run(): Promise<void> {
           cctpExitAnonymizer: requiredString((await api.config()).starknet.cctpExitAnonymizer, 'exit anonymizer'),
           cctpMaxFee: BigInt(flow.quote.outboundCctpMaxFeeBase),
           capability,
+          proofCheckpoint: proofCheckpoint('exitProof'),
+          onTransactionSubmitted: (txHash) => {
+            bundle.exitTxHash = txHash
+            saveBundle()
+          },
         })
         saveBundle()
       }
+      proofCheckpoint('exitProof').clear()
       flow = await transition(flow, 'bridging-to-ethereum', {
         txHash: bundle.exitTxHash,
         settlementAddress: requiredString(bundle.settlement, 'settlement address'),
@@ -151,7 +178,17 @@ async function run(): Promise<void> {
     sessionStorage.removeItem(STORAGE_KEY)
   } catch (error) {
     saveBundle()
-    fail(error, true)
+    const retryAt = dailyBudgetRetryAt(error)
+    fail(error, true, retryAt)
+    if (retryAt !== undefined) {
+      automaticRetry = window.setTimeout(
+        () => {
+          automaticRetry = undefined
+          void run()
+        },
+        Math.max(1_000, retryAt - Date.now()),
+      )
+    }
   } finally {
     running = false
   }
@@ -289,16 +326,48 @@ function saveBundle(): void {
   if (bundle) sessionStorage.setItem(STORAGE_KEY, JSON.stringify(bundle))
 }
 
+function proofCheckpoint(field: 'depositProof' | 'exitProof'): ProofCheckpointStore {
+  return {
+    load: () => bundle[field],
+    save: (checkpoint) => {
+      bundle[field] = checkpoint
+      saveBundle()
+    },
+    clear: () => {
+      delete bundle[field]
+      saveBundle()
+    },
+  }
+}
+
 function update(message: string): void {
   status.textContent = 'Recovery in progress.'
   detail.textContent = message
 }
 
-function fail(error: unknown, canRetry: boolean): void {
+function fail(error: unknown, canRetry: boolean, retryAt?: number): void {
   status.textContent = 'Recovery paused. Keep this tab open.'
-  detail.textContent = error instanceof Error ? error.message : String(error)
+  detail.textContent =
+    retryAt === undefined
+      ? error instanceof Error
+        ? error.message
+        : String(error)
+      : `Starkscan's daily proof capacity is exhausted. This tab will retry automatically at ${new Date(
+          retryAt,
+        ).toLocaleString()}.`
   dot.className = 'failed'
   retry.hidden = !canRetry
+}
+
+function dailyBudgetRetryAt(error: unknown): number | undefined {
+  if (!(error instanceof ProofApiError) || error.status !== 429) return undefined
+  if (
+    error.code !== 'prover_daily_budget_exhausted' &&
+    !/daily.+budget|budget.+exhausted/i.test(error.message)
+  ) {
+    return undefined
+  }
+  return Date.now() + (error.retryAfterMs ?? 60_000)
 }
 
 function waitUntil(timestamp: number): Promise<void> {
