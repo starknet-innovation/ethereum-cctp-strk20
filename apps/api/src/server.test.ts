@@ -270,11 +270,16 @@ describe('api', () => {
     expect((await patch(first, { phase: 'bridging-to-starknet' })).statusCode).toBe(409)
     expect((await patch(first, { phase: 'starknet-funded', txHash: '0xabc' })).statusCode).toBe(200)
 
-    // Once the holder fails, a recovery flow may take the burn over exactly once.
+    // Once the holder fails, exactly one of the recovery flows racing for the burn takes it over.
     expect((await patch(first, { phase: 'failed', failureReason: 'tab closed' })).statusCode).toBe(200)
-    expect((await patch(second, { phase: 'bridging-to-starknet' })).statusCode).toBe(200)
     const third = await open()
-    expect((await patch(third, { phase: 'bridging-to-starknet' })).statusCode).toBe(409)
+    const raced = await Promise.all([
+      patch(second, { phase: 'bridging-to-starknet' }),
+      patch(third, { phase: 'bridging-to-starknet' }),
+    ])
+    expect(raced.map((response) => response.statusCode).sort()).toEqual([200, 409])
+    const fourth = await open()
+    expect((await patch(fourth, { phase: 'bridging-to-starknet' })).statusCode).toBe(409)
     await app.close()
   })
 

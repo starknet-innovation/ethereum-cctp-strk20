@@ -1004,8 +1004,9 @@ async function claimEntryBurn(
   if (holder === flow.id) return true
   const previous = await flowStore.peek(holder)
   if (previous && previous.phase !== 'failed') return false
-  await stateStore.set(key, flow.id, FlowStore.ttlSeconds)
-  return true
+  // Hand over atomically: of several recovery flows racing for a failed holder's burn, exactly
+  // one swaps the claim; the others observe a new holder and are refused.
+  return stateStore.compareAndSwap(key, holder, flow.id, FlowStore.ttlSeconds)
 }
 
 async function verifiedEntry(verifier: EntryVerifier, flow: PublicFlow): Promise<boolean> {
