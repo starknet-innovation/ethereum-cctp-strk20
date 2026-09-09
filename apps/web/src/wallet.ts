@@ -6,6 +6,8 @@ import {
   erc20Abi,
   keccak256,
   stringToHex,
+  TransactionReceiptNotFoundError,
+  WaitForTransactionReceiptTimeoutError,
   type Address,
   type EIP1193Provider,
   type Hex,
@@ -89,7 +91,9 @@ export async function submitEntry(args: {
   quote: RouteQuote
   starknetRecipient: string
   onApproval?: (txHash: Hex) => void
+  onEntryAttempt?: () => void
 }): Promise<Hex> {
+  await assertWalletAccount(args.wallet)
   const transport = custom(args.wallet.provider)
   const walletClient = createWalletClient({ account: args.wallet.account, chain: mainnet, transport })
   const publicClient = createPublicClient({ chain: mainnet, transport })
@@ -105,6 +109,7 @@ export async function submitEntry(args: {
       args: [args.wallet.account, args.entryRouter],
     })
     if (allowance < inputAmount) {
+      await assertWalletAccount(args.wallet)
       const approval = await walletClient.writeContract({
         address: token,
         abi: erc20Abi,
@@ -112,12 +117,27 @@ export async function submitEntry(args: {
         args: [args.entryRouter, inputAmount],
       })
       args.onApproval?.(approval)
-      const receipt = await publicClient.waitForTransactionReceipt({ hash: approval })
-      if (receipt.status !== 'success') throw new Error(`${input} approval reverted`)
+      try {
+        await waitForEthereumReceipt(
+          (parameters) => publicClient.waitForTransactionReceipt(parameters),
+          approval,
+          10 * 60_000,
+        )
+      } catch (cause) {
+        if (cause instanceof Error && cause.message === 'Ethereum transaction reverted') {
+          throw new Error(`${input} approval reverted`)
+        }
+        throw cause
+      }
     }
   }
 
   const inputAsset = { ETH: 0, USDC: 1, WBTC: 2 }[input]
+  // Account selection can change while the allowance read or approval prompt is pending. Keep this
+  // guard immediately adjacent to the value-moving entry write, including the sufficient-allowance
+  // path that skips approval entirely.
+  await assertWalletAccount(args.wallet)
+  args.onEntryAttempt?.()
   return walletClient.writeContract({
     address: args.entryRouter,
     abi: ENTRY_ABI,
@@ -145,8 +165,77 @@ export async function waitForEthereumTransaction(
   timeoutMs = 10 * 60_000,
 ): Promise<void> {
   const client = createPublicClient({ chain: mainnet, transport: custom(wallet.provider) })
-  const receipt = await client.waitForTransactionReceipt({ hash, timeout: timeoutMs })
-  if (receipt.status !== 'success') throw new Error('Ethereum transaction reverted')
+  return waitForEthereumReceipt(
+    (parameters) => client.waitForTransactionReceipt(parameters),
+    hash,
+    timeoutMs,
+  )
+}
+
+type ReceiptWaiter = (parameters: { hash: Hex; timeout: number }) => Promise<{ status: string }>
+
+/**
+ * Rabby's RPC can observe a pending transaction or its replacement one block before the matching
+ * receipt is available. viem's replacement check currently surfaces that normal indexing race as
+ * TransactionReceiptNotFoundError instead of continuing to poll, so retry it within our original
+ * deadline. Other errors (including a genuine overall timeout) still stop the flow.
+ */
+export async function waitForEthereumReceipt(
+  waitForReceipt: ReceiptWaiter,
+  hash: Hex,
+  timeoutMs: number,
+  retry: (delayMs: number) => Promise<void> = sleep,
+  now: () => number = Date.now,
+): Promise<void> {
+  const deadline = now() + timeoutMs
+  while (true) {
+    const remaining = deadline - now()
+    if (remaining <= 0) throw new WaitForTransactionReceiptTimeoutError({ hash })
+    try {
+      const receipt = await waitForReceipt({ hash, timeout: remaining })
+      if (receipt.status !== 'success') throw new Error('Ethereum transaction reverted')
+      return
+    } catch (cause) {
+      if (!(cause instanceof TransactionReceiptNotFoundError)) throw cause
+      const retryWindow = deadline - now()
+      if (retryWindow <= 0) throw new WaitForTransactionReceiptTimeoutError({ hash })
+      if (retryWindow <= 1_000) {
+        // Sleeping away the entire final window guarantees that the next deadline check throws
+        // without consulting the receipt waiter. Yield between immediate polls and keep trying
+        // until the wall-clock deadline is actually exhausted.
+        await retry(0)
+      } else {
+        await retry(1_000)
+      }
+    }
+  }
+}
+
+/** EIP-1193 rejection is the only post-request error that proves the user declined submission. */
+export function isUserRejectedRequest(cause: unknown): boolean {
+  let current = cause
+  const seen = new Set<unknown>()
+  while (typeof current === 'object' && current !== null && !seen.has(current)) {
+    seen.add(current)
+    if ('code' in current && current.code === 4_001) return true
+    current = 'cause' in current ? current.cause : undefined
+  }
+  return false
+}
+
+/** Ensure a cached route still belongs to Rabby's currently selected mainnet account. */
+export async function assertWalletAccount(wallet: BrowserWallet): Promise<void> {
+  const chainId = await wallet.provider.request({ method: 'eth_chainId' })
+  if (chainId !== '0x1') throw new Error('Switch Rabby to Ethereum mainnet and try again.')
+
+  const accounts = (await wallet.provider.request({ method: 'eth_accounts' })) as Address[]
+  const current = accounts[0]
+  if (!current) throw new Error('Rabby is disconnected. Reconnect it and try again.')
+  if (current.toLowerCase() !== wallet.account.toLowerCase()) {
+    throw new Error(
+      `Rabby changed accounts from ${short(wallet.account)} to ${short(current)}. Start again with the currently selected account.`,
+    )
+  }
 }
 
 /**
@@ -236,6 +325,10 @@ export function formatTokenAmount(amount: string, token: TokenSymbol): string {
 
 function flowIdToBytes32(id: string): Hex {
   return keccak256(stringToHex(id))
+}
+
+function short(value: string): string {
+  return `${value.slice(0, 6)}\u2026${value.slice(-4)}`
 }
 
 function sleep(ms: number): Promise<void> {

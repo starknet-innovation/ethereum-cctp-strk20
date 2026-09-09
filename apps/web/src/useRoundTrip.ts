@@ -12,6 +12,7 @@ import {
 import { formatUnits, isAddress, type Address, type Hex } from 'viem'
 import { api } from './api.js'
 import { assertPinnedDeployments } from './deployments.js'
+import { reportFlowFailureBestEffort, SERVER_SAFE_FAILURE_REASON } from './flowFailure.js'
 import { clearIdentity, createEphemeralIdentity, type EphemeralIdentity } from './identity.js'
 import { createRecoveryProgress, type RecoveryProgress } from './progress.js'
 import {
@@ -24,6 +25,7 @@ import {
 } from './starknet.js'
 import {
   connectRabby,
+  isUserRejectedRequest,
   predictSettlement,
   submitEntry,
   waitForEthereumTransaction,
@@ -58,8 +60,12 @@ export function useRoundTrip() {
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [active, setActive] = useState(false)
+  const [recoveryAvailable, setRecoveryAvailable] = useState(false)
   const [now, setNow] = useState(Date.now())
   const identityRef = useRef<EphemeralIdentity | undefined>(undefined)
+  // React state disables the button on the next render; this synchronous lock closes the smaller
+  // window in which two click handlers could both enter start().
+  const startingRef = useRef(false)
   // Browser-only exit-side progress; read by same-tab recovery, never sent to the API.
   const progressRef = useRef<RecoveryProgress>(createRecoveryProgress())
 
@@ -117,6 +123,10 @@ export function useRoundTrip() {
 
   const start = useCallback(
     async (form: TransferForm) => {
+      if (startingRef.current) return
+      startingRef.current = true
+      setBusy(true)
+      let connected: BrowserWallet
       try {
         validateForm(form)
         if (!quote || JSON.stringify(quote.request) !== JSON.stringify(quoteRequest(form))) {
@@ -127,18 +137,23 @@ export function useRoundTrip() {
         }
         // Only the reviewed deployments compiled into this bundle are ever used.
         assertPinnedDeployments(config)
+        // Refresh the provider selection at the transaction boundary. The account cached when the
+        // user first connected may no longer be Rabby's active account by the time they start.
+        connected = await connectRabby()
+        setWallet(connected)
       } catch (cause) {
         setError(errorText(cause))
+        setBusy(false)
+        startingRef.current = false
         throw cause
       }
-      const connected = wallet ?? (await connectRabby())
-      setWallet(connected)
-      setBusy(true)
       setActive(true)
+      setRecoveryAvailable(false)
       setError(undefined)
 
       let currentFlow: PublicFlow | undefined
       let writeToken: string | undefined
+      let entryWriteAttempted = false
       const identity = createEphemeralIdentity()
       identityRef.current = identity
       const progress = createRecoveryProgress()
@@ -188,8 +203,12 @@ export function useRoundTrip() {
           quote: freshQuote,
           starknetRecipient: identity.address,
           onApproval: () => setMessage('Approval confirmed. Confirm the entry transaction in Rabby.'),
+          onEntryAttempt: () => {
+            entryWriteAttempted = true
+          },
         })
         note({ entryTxHash: entryHash })
+        setRecoveryAvailable(true)
         await transition('entry-submitted', { txHash: entryHash })
         setMessage('Entry submitted. Waiting for Ethereum confirmation…')
         await waitForEthereumTransaction(connected, entryHash)
@@ -304,26 +323,58 @@ export function useRoundTrip() {
         identityRef.current = undefined
         progressRef.current = createRecoveryProgress()
         setActive(false)
+        setRecoveryAvailable(false)
       } catch (cause) {
         const reason = errorText(cause)
         setError(reason)
-        setMessage('The automatic flow stopped. Do not close or reload this tab; the in-memory recovery key is still present.')
-        if (currentFlow && writeToken && currentFlow.phase !== 'failed' && currentFlow.phase !== 'completed') {
-          try {
-            currentFlow = await api.updateFlow(currentFlow.id, writeToken, {
-              phase: 'failed',
-              failureReason: reason.slice(0, 500),
-            })
-            setFlow(currentFlow)
-          } catch {
-            // Preserve the original failure; the browser-held secrets remain in memory.
+        const entryWasSubmitted = Boolean(progress.entryTxHash)
+        const submissionIsUncertain = entryWriteAttempted && !entryWasSubmitted && !isUserRejectedRequest(cause)
+        const recoveryMaterialMustBePreserved = entryWasSubmitted || submissionIsUncertain
+        setMessage(
+          entryWasSubmitted
+            ? 'The automatic flow stopped. Do not close or reload this tab; the in-memory recovery key is still present.'
+            : submissionIsUncertain
+              ? 'Rabby may have submitted the entry without returning its hash. Do not close or reload this tab; check Rabby activity and contact the operator.'
+              : 'No entry transaction was submitted and no transfer left Ethereum. You can start again.',
+        )
+        const failureTarget =
+          currentFlow && writeToken && currentFlow.phase !== 'failed' && currentFlow.phase !== 'completed'
+            ? { id: currentFlow.id, token: writeToken }
+            : undefined
+        if (recoveryMaterialMustBePreserved && failureTarget && currentFlow) {
+          currentFlow = {
+            ...currentFlow,
+            phase: 'failed',
+            failureReason: SERVER_SAFE_FAILURE_REASON,
+            updatedAt: new Date().toISOString(),
           }
+          setFlow(currentFlow)
+        }
+        if (!recoveryMaterialMustBePreserved) {
+          clearIdentity(identity)
+          identityRef.current = undefined
+          progressRef.current = createRecoveryProgress()
+          setFlow(undefined)
+          setActive(false)
+          setRecoveryAvailable(false)
+        }
+        // Release all browser-local state before starting the unbounded, best-effort PATCH. A
+        // stalled API must not keep the Start button or synchronous click lock engaged.
+        setBusy(false)
+        startingRef.current = false
+        if (failureTarget) {
+          reportFlowFailureBestEffort(
+            api.updateFlow,
+            failureTarget.id,
+            failureTarget.token,
+          )
         }
       } finally {
         setBusy(false)
+        startingRef.current = false
       }
     },
-    [config, quote, wallet],
+    [config, quote],
   )
 
   const invalidateQuote = useCallback(() => {
@@ -339,6 +390,7 @@ export function useRoundTrip() {
     error,
     busy,
     active,
+    recoveryAvailable,
     now,
     connect,
     preview,
