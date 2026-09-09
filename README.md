@@ -24,9 +24,11 @@ app fails closed until every deployment address and required upstream is configu
 - No wallet prompt occurs after the entry transaction.
 
 Before the first prompt, the route review itemizes both swap pool fees, inbound and outbound CCTP
-fees, Circle forwarding, estimated Starknet private-execution fees, and costs paid separately or by
-the service. The estimated recipient amount includes route deductions; Ethereum wallet gas is an
-additional ETH cost shown by Rabby.
+fees, Circle forwarding, estimated Starknet private-execution fees and their client-enforced
+absolute ceiling, and costs paid separately or by the service. The estimated recipient amount uses
+the displayed estimate; Ethereum wallet gas is an additional ETH cost shown by Rabby. A refreshed
+route cannot weaken the reviewed amount floors or raise a disclosed fee cap without returning to
+the review screen.
 
 The browser generates the Stark account key and pool secret in memory. **Closing or reloading the
 tab while a transfer is active destroys those secrets and can make the funds unrecoverable.** This

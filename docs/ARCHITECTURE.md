@@ -35,8 +35,13 @@ delay is therefore `max(user delay, proof readiness)`.
 - Connects a Rabby EOA and enforces Ethereum chain ID 1.
 - Collects input/output token, amount, recipient, and delay.
 - Shows the complete pre-signing amount path: included Uniswap pool fees and price impact, separate
-  CCTP protocol and forwarding caps, estimated private paymaster fees, the USDC amount before the
-  payout swap, slippage floor, wallet gas paid separately, and service-paid costs.
+  CCTP protocol and forwarding caps, estimated private paymaster fees and their absolute combined
+  client ceiling, the USDC amount before the payout swap, slippage floor, wallet gas paid
+  separately, and service-paid costs. Direct USDC settlement is explicitly identified as having a
+  quote planning threshold rather than a contract-enforced swap minimum.
+- Refreshes prices and Circle caps immediately before entry, but preserves the reviewed bridge and
+  payout floors. A higher fee cap or a changed Uniswap pool returns the refreshed route to review
+  before any transaction is submitted.
 - Generates an independent random Stark signing key and privacy viewing key in memory.
 - Submits the Ethereum approval (if needed) and entry transaction.
 - Polls Circle Iris, submits the sponsored Starknet mint, signs proof invocations locally, and

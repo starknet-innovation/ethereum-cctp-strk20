@@ -1,6 +1,7 @@
 import {
   CCTP_FAST_FINALITY_THRESHOLD,
   CHAIN,
+  MAX_PRIVATE_FEE_BASE,
   TOKENS,
   type QuoteRequest,
   type RouteQuote,
@@ -103,6 +104,7 @@ export class QuoteService {
       inboundCctpProtocolFeeBase: inboundFees.protocolFee.toString(),
       inboundCctpMaxFeeBase: inboundFees.total.toString(),
       estimatedStarknetFeesBase: this.estimatedStarknetFeesBase.toString(),
+      maximumStarknetFeesBase: (MAX_PRIVATE_FEE_BASE * 2n).toString(),
       outboundCctpProtocolFeeBase: outboundFees.protocolFee.toString(),
       outboundCctpForwardingFeeBase: outboundFees.forwardingFee.toString(),
       outboundCctpMaxFeeBase: outboundFees.total.toString(),

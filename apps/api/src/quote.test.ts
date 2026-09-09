@@ -39,6 +39,7 @@ describe('route quote fee disclosure', () => {
       inboundCctpProtocolFeeBase: '250000',
       inboundCctpMaxFeeBase: '250000',
       estimatedStarknetFeesBase: '2000000',
+      maximumStarknetFeesBase: '4000000',
       outboundCctpProtocolFeeBase: '400000',
       outboundCctpForwardingFeeBase: '600000',
       outboundCctpMaxFeeBase: '1000000',

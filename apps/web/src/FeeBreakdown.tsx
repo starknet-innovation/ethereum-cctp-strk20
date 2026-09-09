@@ -22,8 +22,9 @@ export function FeeBreakdown({
   return (
     <div className="fee-breakdown">
       <p className="fee-intro">
-        The estimated arrival already includes every deduction marked below. Costs marked
-        “separate” are paid outside the amount you send.
+        The estimated arrival uses the fee estimates and caps subtracted below. Private-action
+        fees can vary up to the disclosed client ceiling. Costs marked “separate” are paid outside
+        the amount you send.
       </p>
 
       <h3>Amount path</h3>
@@ -59,7 +60,11 @@ export function FeeBreakdown({
               ? `−${formatTokenAmount(detailed.starknet, 'USDC')} estimated`
               : 'Included · detailed amount unavailable'
           }
-          detail="Private deposit and exit paymaster fees; actual amounts are checked before submission"
+          detail={
+            detailed?.maximumStarknet !== undefined && detailed.maximumStarknetPerAction !== undefined
+              ? `Deposit and exit combined; up to ${formatTokenAmount(detailed.maximumStarknet, 'USDC')} accepted (${formatTokenAmount(detailed.maximumStarknetPerAction, 'USDC')} per action, with lower relative caps for small transfers)`
+              : 'Private deposit and exit paymaster fees; actual amounts are checked before submission'
+          }
         />
         {detailed ? (
           <>
@@ -77,10 +82,17 @@ export function FeeBreakdown({
             />
             <FeeRow
               total
-              label="USDC fee deductions"
+              label="Estimated USDC deductions"
               value={`−${formatTokenAmount(detailed.totalUsdcDeductions, 'USDC')}`}
               detail="CCTP caps plus the Starknet estimate"
             />
+            {detailed.maximumUsdcDeductions && (
+              <FeeRow
+                label="Absolute fee-cap total"
+                value={`−${formatTokenAmount(detailed.maximumUsdcDeductions, 'USDC')}`}
+                detail="CCTP caps plus the configured private-fee ceiling; per-transfer relative caps can make it lower"
+              />
+            )}
             <FeeRow
               label="USDC before payout swap"
               value={formatTokenAmount(detailed.settlementUsdc, 'USDC')}
@@ -122,9 +134,13 @@ export function FeeBreakdown({
           detail="Includes swap execution and route deductions; it is not one additional fee"
         />
         <FeeRow
-          label="On-chain minimum"
+          label={outputToken === 'USDC' ? 'Quote planning threshold' : 'On-chain swap minimum'}
           value={formatTokenAmount(quote.minimumOutputAmountBase, outputToken)}
-          detail={`${basisPointsPercent(quote.request.slippageBps)} below the estimate for protection; slippage is not a fee`}
+          detail={
+            outputToken === 'USDC'
+              ? 'Direct USDC payout transfers the amount that arrives; the settlement contract does not enforce this value'
+              : `${basisPointsPercent(quote.request.slippageBps)} below the estimate for protection; slippage is not a fee`
+          }
         />
       </dl>
 
@@ -182,16 +198,30 @@ function detailedFees(quote: RouteQuote) {
     return undefined
   }
   const starknet = BigInt(quote.estimatedStarknetFeesBase)
+  const maximumStarknet = quote.maximumStarknetFeesBase === undefined
+    ? undefined
+    : BigInt(quote.maximumStarknetFeesBase)
   const outboundProtocol = BigInt(quote.outboundCctpProtocolFeeBase)
   const forwarding = BigInt(quote.outboundCctpForwardingFeeBase)
   return {
     starknet: starknet.toString(),
+    maximumStarknet: maximumStarknet?.toString(),
+    maximumStarknetPerAction: maximumStarknet === undefined
+      ? undefined
+      : (maximumStarknet / 2n).toString(),
     outboundProtocol: outboundProtocol.toString(),
     forwarding: forwarding.toString(),
     settlementUsdc: quote.estimatedSettlementUsdcBase,
     totalUsdcDeductions: (
       BigInt(quote.inboundCctpMaxFeeBase) + starknet + BigInt(quote.outboundCctpMaxFeeBase)
     ).toString(),
+    maximumUsdcDeductions: maximumStarknet === undefined
+      ? undefined
+      : (
+          BigInt(quote.inboundCctpMaxFeeBase) +
+          maximumStarknet +
+          BigInt(quote.outboundCctpMaxFeeBase)
+        ).toString(),
   }
 }
 

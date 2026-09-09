@@ -211,7 +211,10 @@ export function App() {
                 <div className="quote-main">
                   <span>Estimated arrival</span>
                   <strong>{formatTokenAmount(roundTrip.quote.estimatedOutputAmountBase, form.outputToken)}</strong>
-                  <small>Minimum {formatTokenAmount(roundTrip.quote.minimumOutputAmountBase, form.outputToken)}</small>
+                  <small>
+                    {form.outputToken === 'USDC' ? 'Quote reference' : 'On-chain minimum'}{' '}
+                    {formatTokenAmount(roundTrip.quote.minimumOutputAmountBase, form.outputToken)}
+                  </small>
                 </div>
                 <FeeBreakdown
                   quote={roundTrip.quote}

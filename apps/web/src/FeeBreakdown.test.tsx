@@ -16,6 +16,7 @@ const quote: RouteQuote = {
   inboundCctpProtocolFeeBase: '250000',
   inboundCctpMaxFeeBase: '250000',
   estimatedStarknetFeesBase: '2000000',
+  maximumStarknetFeesBase: '4000000',
   outboundCctpProtocolFeeBase: '400000',
   outboundCctpForwardingFeeBase: '600000',
   outboundCctpMaxFeeBase: '1000000',
@@ -42,7 +43,10 @@ describe('fee breakdown', () => {
     expect(html).toContain('2.0 USDC')
     expect(html).toContain('0.4 USDC')
     expect(html).toContain('0.6 USDC')
+    expect(html).toContain('up to 4.0 USDC accepted')
     expect(html).toContain('3.25 USDC')
+    expect(html).toContain('5.25 USDC')
+    expect(html).toContain('Absolute fee-cap total')
     expect(html).toContain('21.75 USDC')
     expect(html).toContain('Separate ETH cost')
     expect(html).toContain('0.000495 WBTC')
@@ -54,6 +58,7 @@ describe('fee breakdown', () => {
     const legacy: RouteQuote = { ...quote }
     delete legacy.inboundCctpProtocolFeeBase
     delete legacy.estimatedStarknetFeesBase
+    delete legacy.maximumStarknetFeesBase
     delete legacy.outboundCctpProtocolFeeBase
     delete legacy.outboundCctpForwardingFeeBase
     delete legacy.estimatedSettlementUsdcBase
@@ -70,6 +75,31 @@ describe('fee breakdown', () => {
     expect(html).toContain('detailed amount unavailable')
     expect(html).toContain('CCTP return + forwarding')
     expect(html).not.toContain('USDC before payout swap')
+  })
+
+  it('does not claim that a direct USDC payout has an enforced on-chain floor', () => {
+    const usdc: RouteQuote = {
+      ...quote,
+      request: { inputToken: 'USDC', outputToken: 'USDC', amount: '25', slippageBps: 100 },
+      inputAmountBase: '25000000',
+      estimatedOutputAmountBase: '21750000',
+      minimumOutputAmountBase: '21532500',
+      entryPoolFee: 0,
+      exitPoolFee: 0,
+    }
+    const html = renderToStaticMarkup(
+      <FeeBreakdown
+        quote={usdc}
+        inputToken="USDC"
+        outputToken="USDC"
+        walletPrompts="up to 2 transactions"
+        delayMinutes={30}
+      />,
+    )
+
+    expect(html).toContain('Quote planning threshold')
+    expect(html).toContain('does not enforce this value')
+    expect(html).not.toContain('On-chain swap minimum')
   })
 
   it('states the numeric send-to-receive difference when both assets match', () => {

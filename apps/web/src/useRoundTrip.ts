@@ -15,6 +15,7 @@ import { assertPinnedDeployments } from './deployments.js'
 import { reportFlowFailureBestEffort, SERVER_SAFE_FAILURE_REASON } from './flowFailure.js'
 import { clearIdentity, createEphemeralIdentity, type EphemeralIdentity } from './identity.js'
 import { createRecoveryProgress, type RecoveryProgress } from './progress.js'
+import { executionQuoteForReviewedRoute } from './quoteSafety.js'
 import {
   sponsoredMint,
   sponsoredPrivacyDeposit,
@@ -154,6 +155,7 @@ export function useRoundTrip() {
       let currentFlow: PublicFlow | undefined
       let writeToken: string | undefined
       let entryWriteAttempted = false
+      let executionQuote: RouteQuote | undefined
       const identity = createEphemeralIdentity()
       identityRef.current = identity
       const progress = createRecoveryProgress()
@@ -165,7 +167,10 @@ export function useRoundTrip() {
         options: { txHash?: string; occurredAt?: string } = {},
       ) => {
         if (!currentFlow || !writeToken) return
-        currentFlow = await api.updateFlow(currentFlow.id, writeToken, { phase, ...options })
+        const updated = await api.updateFlow(currentFlow.id, writeToken, { phase, ...options })
+        // Keep the reviewed floors in React state: same-tab recovery extracts this local flow and
+        // must not fall back to the weaker minima from the API's just-in-time quote.
+        currentFlow = executionQuote ? { ...updated, quote: executionQuote } : updated
         setFlow(currentFlow)
       }
 
@@ -173,19 +178,15 @@ export function useRoundTrip() {
         setMessage('Refreshing the mainnet route and Circle fee limits…')
         const freshQuote = await api.quote(quoteRequest(form))
         setQuote(freshQuote)
-        if (
-          BigInt(freshQuote.estimatedBridgeAmountBase) < BigInt(quote.minimumBridgeAmountBase) ||
-          BigInt(freshQuote.estimatedOutputAmountBase) < BigInt(quote.minimumOutputAmountBase)
-        ) {
-          throw new Error('The market moved beyond the reviewed slippage limit. Review the refreshed route.')
-        }
+        executionQuote = executionQuoteForReviewedRoute(quote, freshQuote)
+        setQuote(executionQuote)
         const created = await api.createFlow({
-          quoteId: freshQuote.quoteId,
+          quoteId: executionQuote.quoteId,
           ethereumSender: connected.account,
           starknetAccount: identity.address,
           delayMinutes: form.delayMinutes,
         })
-        currentFlow = created.flow
+        currentFlow = { ...created.flow, quote: executionQuote }
         writeToken = created.writeToken
         note({ flowId: created.flow.id, writeToken: created.writeToken })
         const paymasterCapability = { flowId: created.flow.id, flowToken: created.writeToken }
@@ -200,7 +201,7 @@ export function useRoundTrip() {
           wallet: connected,
           entryRouter: POC_DEPLOYMENTS.ethereum.entryRouter,
           flowId: currentFlow.id,
-          quote: freshQuote,
+          quote: executionQuote,
           starknetRecipient: identity.address,
           onApproval: () => setMessage('Approval confirmed. Confirm the entry transaction in Rabby.'),
           onEntryAttempt: () => {
@@ -263,7 +264,7 @@ export function useRoundTrip() {
         await transition('pool-withdrawing')
         setMessage('Delay complete. Creating a fresh recipient-bound Ethereum settlement…')
         const salt = randomHex32()
-        const poolFee = (freshQuote.exitPoolFee || 500) as 100 | 500 | 3000 | 10000
+        const poolFee = (executionQuote.exitPoolFee || 500) as 100 | 500 | 3000 | 10000
         const recoverAfter = Math.floor(Date.now() / 1_000) + RECOVERY_WINDOW_SECONDS
         note({ salt, recoverAfter })
         const expectedSettlement = await predictSettlement({
@@ -272,7 +273,7 @@ export function useRoundTrip() {
           salt,
           recipient: form.recipient as Address,
           outputToken: form.outputToken,
-          minimumOutput: BigInt(freshQuote.minimumOutputAmountBase),
+          minimumOutput: BigInt(executionQuote.minimumOutputAmountBase),
           poolFee,
           recoverAfter,
         })
@@ -281,7 +282,7 @@ export function useRoundTrip() {
           salt,
           recipient: form.recipient as Address,
           outputToken: form.outputToken,
-          minimumOutput: freshQuote.minimumOutputAmountBase,
+          minimumOutput: executionQuote.minimumOutputAmountBase,
           poolFee,
           recoverAfter,
         })
@@ -297,7 +298,7 @@ export function useRoundTrip() {
           privateAmount: deposit.privateAmount,
           settlement: settlement.settlement,
           cctpExitAnonymizer: POC_DEPLOYMENTS.starknet.cctpExitAnonymizer,
-          cctpMaxFee: BigInt(freshQuote.outboundCctpMaxFeeBase),
+          cctpMaxFee: BigInt(executionQuote.outboundCctpMaxFeeBase),
           capability: paymasterCapability,
           onTransactionSubmitted: (txHash) => note({ exitTxHash: txHash }),
         })
