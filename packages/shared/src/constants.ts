@@ -55,7 +55,7 @@ export const CCTP_FAST_FINALITY_THRESHOLD = 1_000
 export const POC_DEPLOYMENTS = {
   ethereum: {
     entryRouter: '0xa56A5CF49B7071C014c4B3795bC8972e9E5E3637',
-    exitSettlementFactory: '0x1fa1F600EC9A1044c19eE38C19BC85Df961BF4ba',
+    exitSettlementFactory: '0xAf40741d8A074CF61AE760af0f90EB0A1EDf8c21',
   },
   starknet: {
     cctpExitAnonymizer: '0x038bc3151769a0aa4a2d43a6dc2f3f0b0830a91ec4d61bfe1058e58eefa4b58e',

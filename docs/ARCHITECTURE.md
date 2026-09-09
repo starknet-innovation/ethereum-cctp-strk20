@@ -197,12 +197,11 @@ Do not open the route button until all of these are complete:
 
 1. Audit the Solidity and Cairo contracts, including token edge cases and CCTP fee behavior.
 2. Deploy `PrivacyEntryRouter`, `ExitSettlementFactory`, and `CctpExitAnonymizer` with the pinned
-   mainnet addresses; verify source and constructor arguments on explorers. The
-   `ExitSettlementFactory` recorded in `deployments/ethereum-mainnet.json` predates the removal of
-   the lockable `settled` flag and must be redeployed from this revision before any new flow; after
-   redeploying, update that file, `POC_DEPLOYMENTS` in `packages/shared`, and
-   `ETHEREUM_EXIT_SETTLEMENT_FACTORY`. Browser and canary refuse configuration that differs from
-   the pinned deployments.
+   mainnet addresses; verify source and constructor arguments on explorers. The replacement
+   `ExitSettlementFactory` removes the lockable `settled` flag and is recorded in
+   `deployments/ethereum-mainnet.json`; `POC_DEPLOYMENTS` and the backend
+   `ETHEREUM_EXIT_SETTLEMENT_FACTORY` value must stay identical to that manifest. Browser and
+   canary refuse configuration that differs from the pinned deployments.
 3. Confirm the deployed privacy-pool class hash is compatible with the vendored SDK.
 4. Configure funded, capped relayer and AVNU sponsor policies; never use an unrestricted treasury
    key.

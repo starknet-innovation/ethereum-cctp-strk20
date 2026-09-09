@@ -16,17 +16,20 @@
   },
   "contracts": {
     "exitSettlementFactory": {
-      "address": "0x1fa1F600EC9A1044c19eE38C19BC85Df961BF4ba",
-      "transactionHash": "0x302a1c8f36ab6d8ff9f8d87b67e6a06d5850c828181e1fc25e3828b272b48727",
-      "blockNumber": 25926017,
-      "blockHash": "0xfab18eace25647026a7947495af7088e75d430f87a2923ddc4d3a9602dad9e4e",
-      "timestamp": "2026-09-07T14:17:11Z",
-      "runtimeCodeHash": "0xc2effaa8cf286a1f52311b1ea207bebee52b2ff893801d026e13fa1637495999",
-      "gasUsed": 1396686,
-      "effectiveGasPriceWei": "243282852"
+      "address": "0xAf40741d8A074CF61AE760af0f90EB0A1EDf8c21",
+      "deployer": "0x518313aCd9d36DB1F9cdA27760A93474b456FC14",
+      "transactionHash": "0xde4379c97aa09be2f73e1183273160c59d58bef09ce9080329136fe9fc0ab3b3",
+      "blockNumber": 25937536,
+      "blockHash": "0xe814fe818cac38c8e94efe34e966cea3ed7cf3913dd8f6a1e8b6b78fb7046d4f",
+      "timestamp": "2026-09-09T04:50:35Z",
+      "runtimeCodeHash": "0x7aba347c309136ef5362b5ca1710be4709b460f672f3b03957d897ae44accea7",
+      "gasUsed": 1378078,
+      "effectiveGasPriceWei": "69830587",
+      "supersedes": "0x1fa1F600EC9A1044c19eE38C19BC85Df961BF4ba"
     },
     "privacyEntryRouter": {
       "address": "0xa56A5CF49B7071C014c4B3795bC8972e9E5E3637",
+      "deployer": "0xD5465752CC52BEe305b7576eFE778498dCD75CE1",
       "transactionHash": "0x4ca58bff72ecbfda5f3f5b13fb2cfcf0c21120834bfcf3ed2a99f618bf9f7ee0",
       "blockNumber": 25926018,
       "blockHash": "0x839df1f2ca3d8dbdfd278d42fd2008e4c84b2bcb00ee891ba1f9232bba3437a8",
