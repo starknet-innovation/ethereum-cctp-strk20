@@ -125,16 +125,40 @@ describe('Ethereum receipt polling', () => {
   })
 
   it('bounds a receipt-race retry by the original deadline', async () => {
+    let currentTime = 100
     const wait = vi
       .fn()
-      .mockRejectedValueOnce(new TransactionReceiptNotFoundError({ hash: HASH }))
+      .mockImplementationOnce(async () => {
+        currentTime += 9
+        throw new TransactionReceiptNotFoundError({ hash: HASH })
+      })
       .mockResolvedValueOnce({ status: 'success' })
-    const retry = vi.fn(async (_delayMs: number) => undefined)
-    const now = vi.fn().mockReturnValueOnce(100).mockReturnValue(109)
+    const retry = vi.fn(async (delayMs: number) => {
+      currentTime += delayMs
+    })
 
-    await waitForEthereumReceipt(wait, HASH, 10, retry, now)
+    await waitForEthereumReceipt(wait, HASH, 10, retry, () => currentTime)
 
-    expect(retry).toHaveBeenCalledWith(1)
+    expect(retry).toHaveBeenCalledWith(0)
+    expect(wait).toHaveBeenNthCalledWith(2, { hash: HASH, timeout: 1 })
+  })
+
+  it('limits the final receipt window to one immediate retry', async () => {
+    let currentTime = 100
+    const wait = vi.fn(async () => {
+      currentTime = 109
+      throw new TransactionReceiptNotFoundError({ hash: HASH })
+    })
+    const retry = vi.fn(async (delayMs: number) => {
+      currentTime += delayMs
+    })
+
+    await expect(waitForEthereumReceipt(wait, HASH, 10, retry, () => currentTime)).rejects.toBeInstanceOf(
+      WaitForTransactionReceiptTimeoutError,
+    )
+
+    expect(wait).toHaveBeenCalledTimes(2)
+    expect(retry).toHaveBeenCalledTimes(1)
   })
 })
 

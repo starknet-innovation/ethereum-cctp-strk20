@@ -188,6 +188,7 @@ export async function waitForEthereumReceipt(
   now: () => number = Date.now,
 ): Promise<void> {
   const deadline = now() + timeoutMs
+  let finalRetryAttempted = false
   while (true) {
     const remaining = deadline - now()
     if (remaining <= 0) throw new WaitForTransactionReceiptTimeoutError({ hash })
@@ -199,7 +200,15 @@ export async function waitForEthereumReceipt(
       if (!(cause instanceof TransactionReceiptNotFoundError)) throw cause
       const retryWindow = deadline - now()
       if (retryWindow <= 0) throw new WaitForTransactionReceiptTimeoutError({ hash })
-      await retry(Math.min(1_000, retryWindow))
+      if (retryWindow <= 1_000) {
+        // Sleeping away the entire final window guarantees that the next deadline check throws
+        // without consulting the receipt waiter. Yield once and spend that window on one last poll.
+        if (finalRetryAttempted) throw new WaitForTransactionReceiptTimeoutError({ hash })
+        finalRetryAttempted = true
+        await retry(0)
+      } else {
+        await retry(1_000)
+      }
     }
   }
 }
