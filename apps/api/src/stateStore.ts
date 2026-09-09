@@ -4,6 +4,10 @@ export interface StateStore {
   get(key: string): Promise<string | undefined>
   set(key: string, value: string, ttlSeconds: number): Promise<void>
   reserveCounter(key: string, amount: number, limit: number, ttlSeconds: number): Promise<number | undefined>
+  /** Atomically set `value` if the key is absent. Returns the value now held (existing or new). */
+  claim(key: string, value: string, ttlSeconds: number): Promise<string>
+  /** Atomically replace the value only if the key currently holds `expected`. Returns success. */
+  compareAndSwap(key: string, expected: string, value: string, ttlSeconds: number): Promise<boolean>
   ping(): Promise<void>
   close(): Promise<void>
 }
@@ -42,6 +46,22 @@ export class MemoryStateStore implements StateStore {
     const next = current + amount
     this.values.set(key, { value: String(next), expiresAt: Date.now() + ttlSeconds * 1_000 })
     return next
+  }
+
+  // No awaits between check and write: the event loop cannot interleave another caller.
+  async claim(key: string, value: string, ttlSeconds: number): Promise<string> {
+    const stored = this.values.get(key)
+    if (stored && stored.expiresAt > Date.now()) return stored.value
+    this.values.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1_000 })
+    return value
+  }
+
+  async compareAndSwap(key: string, expected: string, value: string, ttlSeconds: number): Promise<boolean> {
+    const stored = this.values.get(key)
+    const current = stored && stored.expiresAt > Date.now() ? stored.value : undefined
+    if (current !== expected) return false
+    this.values.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1_000 })
+    return true
   }
 
   async ping(): Promise<void> {}
@@ -109,6 +129,40 @@ export class ValkeyStateStore implements StateStore {
     )
     const next = Number(result)
     return next < 0 ? undefined : next
+  }
+
+  async claim(key: string, value: string, ttlSeconds: number): Promise<string> {
+    await this.connect()
+    const result = await this.client.eval(
+      [
+        "local current = redis.call('GET', KEYS[1])",
+        'if current then return current end',
+        "redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])",
+        'return ARGV[1]',
+      ].join('\n'),
+      1,
+      key,
+      value,
+      String(ttlSeconds),
+    )
+    return String(result)
+  }
+
+  async compareAndSwap(key: string, expected: string, value: string, ttlSeconds: number): Promise<boolean> {
+    await this.connect()
+    const result = await this.client.eval(
+      [
+        "if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end",
+        "redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])",
+        'return 1',
+      ].join('\n'),
+      1,
+      key,
+      expected,
+      value,
+      String(ttlSeconds),
+    )
+    return Number(result) === 1
   }
 
   async ping(): Promise<void> {

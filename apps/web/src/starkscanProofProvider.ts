@@ -69,20 +69,18 @@ export class StarkscanProofProvider implements ProofProviderInterface {
     const body = { block_id: { block_number: blockNumber }, transaction: invocation }
     const requestHash = await sha256(JSON.stringify(body))
     const saved = this.checkpointStore?.load()
-    if (saved && saved.provingBlockId !== blockNumber) {
-      throw new Error('The saved Starkscan proof uses a different proving block; keep this tab open and retry')
-    }
-    if (saved?.requestHash && saved.requestHash !== requestHash) {
-      throw new Error('The saved Starkscan proof does not match the rebuilt private transaction')
-    }
-
-    const idempotencyKey = saved?.idempotencyKey ?? crypto.randomUUID()
+    // A checkpoint is only resumable for the identical request. The SDK injects fresh randomness
+    // into every rebuilt invocation, so a different hash or block means a different proof: start
+    // it under a new idempotency key instead of replaying a job that belongs to another transaction.
+    const resumable =
+      saved !== undefined && saved.provingBlockId === blockNumber && saved.requestHash === requestHash
+    const idempotencyKey = resumable && saved.idempotencyKey ? saved.idempotencyKey : crypto.randomUUID()
     const checkpoint: ProofCheckpoint = {
       version: 1,
       provingBlockId: blockNumber,
       requestHash,
       idempotencyKey,
-      ...(saved?.job ? { job: saved.job } : {}),
+      ...(resumable && saved.job ? { job: saved.job } : {}),
     }
     this.checkpointStore?.save(checkpoint)
 

@@ -139,10 +139,45 @@ export async function submitEntry(args: {
   })
 }
 
-export async function waitForEthereumTransaction(wallet: BrowserWallet, hash: Hex): Promise<void> {
+export async function waitForEthereumTransaction(
+  wallet: BrowserWallet,
+  hash: Hex,
+  timeoutMs = 10 * 60_000,
+): Promise<void> {
   const client = createPublicClient({ chain: mainnet, transport: custom(wallet.provider) })
-  const receipt = await client.waitForTransactionReceipt({ hash })
+  const receipt = await client.waitForTransactionReceipt({ hash, timeout: timeoutMs })
   if (receipt.status !== 'success') throw new Error('Ethereum transaction reverted')
+}
+
+/**
+ * Status of a transaction whose hash was recorded at submission time. 'unknown' means no receipt
+ * within the polling window, so the transaction may be pending or dropped.
+ */
+export async function ethereumTransactionStatus(
+  wallet: BrowserWallet,
+  hash: Hex,
+  attempts = 6,
+): Promise<'success' | 'reverted' | 'unknown'> {
+  const client = createPublicClient({ chain: mainnet, transport: custom(wallet.provider) })
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const receipt = await client.getTransactionReceipt({ hash })
+      return receipt.status === 'success' ? 'success' : 'reverted'
+    } catch {
+      if (attempt < attempts - 1) await sleep(5_000)
+    }
+  }
+  return 'unknown'
+}
+
+export async function usdcBalanceAt(wallet: BrowserWallet, owner: Address): Promise<bigint> {
+  const client = createPublicClient({ chain: mainnet, transport: custom(wallet.provider) })
+  return client.readContract({
+    address: CHAIN.ethereum.tokens.USDC,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [owner],
+  })
 }
 
 export async function predictSettlement(args: {

@@ -55,6 +55,12 @@ export const flowPhaseSchema = z.enum([
 ])
 export type FlowPhase = z.infer<typeof flowPhaseSchema>
 
+/**
+ * Server-side flow record. It deliberately carries only entry-side identifiers. The settlement
+ * address and every exit-side transaction hash resolve on-chain to the final recipient, so storing
+ * them next to `ethereumSender`/`entryTxHash` would be a direct sender-to-recipient join. Exit-side
+ * progress lives only in the browser (memory or the same-tab recovery bundle).
+ */
 export interface PublicFlow {
   id: string
   phase: FlowPhase
@@ -62,19 +68,18 @@ export interface PublicFlow {
   ethereumSender: string
   starknetAccount: string
   delayMinutes: number
-  settlementAddress?: string
   entryTxHash?: string
   inboundMintTxHash?: string
   poolDepositTxHash?: string
   privacyDepositConfirmedAt?: string
   exitEligibleAt?: string
-  poolExitTxHash?: string
-  outboundMintTxHash?: string
-  settlementTxHash?: string
   failureReason?: string
   createdAt: string
   updatedAt: string
 }
+
+/** Phases whose transition may carry a transaction hash. Exit-side phases never do (see PublicFlow). */
+export const TX_HASH_PHASES: readonly FlowPhase[] = ['entry-submitted', 'starknet-funded', 'privacy-delay']
 
 export const createFlowSchema = z
   .object({
@@ -85,15 +90,40 @@ export const createFlowSchema = z
   })
   .strict()
 
+export const flowIdSchema = z.string().regex(/^f_[0-9a-f]{32}$/)
+
+/**
+ * Presented on the `bridging-to-starknet` transition by a recovery flow: the id and write
+ * capability of the stopped flow whose id the entry burn names on-chain. Proves the caller
+ * controls that flow, so a stranger who merely observed the burn cannot take it over.
+ */
+export const entryReleaseSchema = z.object({ flowId: flowIdSchema, token: z.string().min(32).max(512) }).strict()
+
 export const flowUpdateSchema = z
   .object({
     phase: flowPhaseSchema,
     txHash: hashSchema.optional(),
-    settlementAddress: addressSchema.optional(),
     failureReason: z.string().min(1).max(500).optional(),
     occurredAt: z.string().datetime().optional(),
+    release: entryReleaseSchema.optional(),
   })
   .strict()
+  .superRefine((update, context) => {
+    if (update.txHash && !TX_HASH_PHASES.includes(update.phase)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['txHash'],
+        message: 'Exit-side transaction hashes are not stored server-side',
+      })
+    }
+    if (update.release && update.phase !== 'bridging-to-starknet') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['release'],
+        message: 'An entry release only accompanies the bridging-to-starknet transition',
+      })
+    }
+  })
 
 export type FlowUpdate = z.infer<typeof flowUpdateSchema>
 

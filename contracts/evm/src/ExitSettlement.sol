@@ -5,6 +5,9 @@ import { IERC20, ISwapRouter, IWETH, SafeToken } from "./Interfaces.sol";
 
 /// @notice One immutable recipient-bound contract per private exit.
 /// @dev It is deployed only after the privacy delay, so the entry transaction cannot reveal the recipient.
+///      Both payout functions sweep whatever USDC the contract holds at call time and may be called
+///      repeatedly. There is deliberately no "settled" flag: a flag set by an early dust deposit would
+///      permanently lock the real CCTP mint that arrives afterwards.
 contract ExitSettlement {
     using SafeToken for IERC20;
 
@@ -14,7 +17,6 @@ contract ExitSettlement {
         WBTC
     }
 
-    error AlreadySettled();
     error BadConfiguration();
     error EmptyBalance();
     error RecoveryNotReady();
@@ -34,7 +36,6 @@ contract ExitSettlement {
     uint24 public immutable poolFee;
     uint64 public immutable recoverAfter;
 
-    bool public settled;
     uint256 private locked = 1;
 
     constructor(
@@ -52,6 +53,8 @@ contract ExitSettlement {
             usdc_ == address(0) || wbtc_ == address(0) || weth_ == address(0)
                 || swapRouter_ == address(0) || recipient_ == address(0) || recoverAfter_ <= block.timestamp
         ) revert BadConfiguration();
+        // A swap with no floor lets a permissionless settle() be sandwiched down to nothing.
+        if (outputAsset_ != OutputAsset.USDC && minimumOutput_ == 0) revert BadConfiguration();
         usdc = IERC20(usdc_);
         wbtc = IERC20(wbtc_);
         weth = IWETH(weth_);
@@ -71,11 +74,10 @@ contract ExitSettlement {
     }
 
     /// @notice Permissionless final settlement after CCTP has minted USDC here.
+    /// @dev Sweeps the current USDC balance. Safe to call again if more USDC arrives later.
     function settle() external nonReentrant returns (uint256 output) {
-        if (settled) revert AlreadySettled();
         uint256 amount = usdc.balanceOf(address(this));
         if (amount == 0) revert EmptyBalance();
-        settled = true;
 
         if (outputAsset == OutputAsset.USDC) {
             usdc.safeTransfer(recipient, amount);
@@ -110,12 +112,11 @@ contract ExitSettlement {
     }
 
     /// @notice Safe fallback if the requested output swap cannot satisfy its fixed slippage floor.
+    /// @dev Sweeps the current USDC balance to the recipient. Safe to call again later.
     function recoverAsUsdc() external nonReentrant {
-        if (settled) revert AlreadySettled();
         if (block.timestamp < recoverAfter) revert RecoveryNotReady();
         uint256 amount = usdc.balanceOf(address(this));
         if (amount == 0) revert EmptyBalance();
-        settled = true;
         usdc.safeTransfer(recipient, amount);
         emit RecoveredAsUsdc(recipient, amount);
     }

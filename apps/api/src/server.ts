@@ -3,8 +3,12 @@ import rateLimit from '@fastify/rate-limit'
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify'
 import {
   CHAIN,
+  STARKNET_SELECTORS,
   createFlowSchema,
+  feltEquals,
+  flowIdSchema,
   flowUpdateSchema,
+  parseOutsideExecution,
   quoteRequestSchema,
   type ProofRelayJob,
   type ProofRelaySubmission,
@@ -16,6 +20,9 @@ import {
   createPublicClient,
   createWalletClient,
   http,
+  keccak256,
+  parseEventLogs,
+  stringToHex,
   type Address,
   type Hex,
 } from 'viem'
@@ -49,7 +56,6 @@ const settlementParam = z.object({ address: z.string().regex(/^0x[0-9a-fA-F]{40}
 const proofJobParam = z.object({ jobId: z.string().regex(/^prv_[A-Za-z0-9_-]{8,128}$/) })
 const proofPollTokenSchema = z.string().regex(/^[0-9a-f]{64}$/)
 const proofIdempotencyKeySchema = z.string().regex(/^[\x21\x23-\x7e]{16,128}$/)
-const flowIdSchema = z.string().regex(/^f_[0-9a-f]{32}$/)
 const paymasterRequestSchema = z
   .object({
     jsonrpc: z.literal('2.0'),
@@ -164,17 +170,49 @@ const EXIT_SETTLEMENT_ABI = [
   },
 ] as const
 
+const ENTRY_ROUTER_ABI = [
+  {
+    type: 'event',
+    name: 'EntryStarted',
+    inputs: [
+      { name: 'flowId', type: 'bytes32', indexed: true },
+      { name: 'sender', type: 'address', indexed: true },
+      { name: 'inputAsset', type: 'uint8', indexed: true },
+      { name: 'inputAmount', type: 'uint256', indexed: false },
+      { name: 'usdcBurned', type: 'uint256', indexed: false },
+      { name: 'starknetRecipient', type: 'uint256', indexed: false },
+    ],
+  },
+] as const
+
+/**
+ * Confirms that an Ethereum transaction is a successful `PrivacyEntryRouter.start` whose CCTP burn
+ * names the flow's Starknet account and was sent by the flow's Ethereum sender. Returns the
+ * on-chain `flowId` the burn was started with, or undefined when it does not verify.
+ */
+export type EntryVerifier = (args: {
+  txHash: string
+  ethereumSender: string
+  starknetAccount: string
+}) => Promise<{ flowId: Hex } | undefined>
+
+/** Least USDC a settlement must hold before the relayer pays to sweep it (dust would drain gas). */
+const MIN_SETTLE_USDC_BASE = 1_000_000n
+
 export interface ServerOverrides {
   quoteDependencies?: QuoteDependencies
   fetchImpl?: typeof fetch
   stateStore?: StateStore
+  entryVerifier?: EntryVerifier
 }
 
 export async function buildServer(config: ApiConfig, overrides: ServerOverrides = {}) {
   const app = Fastify({
     logger: process.env.NODE_ENV === 'production' ? { level: 'info' } : false,
     bodyLimit: 2 * 1024 * 1024,
-    trustProxy: (_address, hop) => hop <= 1,
+    // Exactly one trusted hop (hop 0 is the socket peer, the managed ALB). Trusting hop 1 as well
+    // let a client forge X-Forwarded-For and pick its own rate-limit key.
+    trustProxy: (_address, hop) => hop < 1,
   })
   await app.register(cors, { origin: config.CORS_ORIGIN, methods: ['GET', 'POST', 'PATCH'] })
   await app.register(rateLimit, { global: true, max: 120, timeWindow: '1 minute' })
@@ -195,6 +233,11 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
       )
     : undefined
   const fetchImpl = overrides.fetchImpl ?? fetch
+  const entryVerifier =
+    overrides.entryVerifier ??
+    (config.ETHEREUM_RPC_URL && config.ETHEREUM_ENTRY_ROUTER
+      ? liveEntryVerifier(config.ETHEREUM_RPC_URL, config.ETHEREUM_ENTRY_ROUTER as Address)
+      : undefined)
   let relayerSubmissionActive = false
 
   app.addHook('onClose', async () => stateStore.close())
@@ -268,6 +311,30 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
     const token = flowToken(request.headers['x-flow-token'])
     const parsed = flowUpdateSchema.safeParse(request.body)
     if (!token || !parsed.success) return reply.code(400).send({ error: 'Invalid update' })
+    if (parsed.data.phase === 'bridging-to-starknet') {
+      // Operator-paid AVNU sponsorship opens in this phase. Tie it to a confirmed entry burn through
+      // the POC router so a self-asserted phase cannot spend operator credit.
+      if (!entryVerifier) return reply.code(503).send({ error: 'Entry verification is not configured' })
+      const current = await flowStore.read(request.params.id, token)
+      if (!current) return reply.code(404).send({ error: 'Flow not found' })
+      const verified = current.entryTxHash ? await verifiedEntry(entryVerifier, current) : undefined
+      if (!verified) {
+        return reply.code(409).send({ error: 'Entry transaction could not be verified on Ethereum' })
+      }
+      // The burn names a flow id on-chain. Sender and account are public in the mempool, so they
+      // alone must not authorise a flow: either this flow is the one the burn names, or the caller
+      // presents the write capability of the flow it names (same-tab recovery). Then bind the burn
+      // to one live flow at a time.
+      const owner = await entryBurnOwner(flowStore, current, verified.flowId, parsed.data.release)
+      if (!owner) {
+        return reply.code(403).send({ error: 'Entry transaction was started for a different flow' })
+      }
+      if (!(await claimEntryBurn(flowStore, stateStore, current, owner))) {
+        return reply.code(409).send({
+          error: 'Entry transaction is already in use by an active flow; that flow must fail before another can take it over',
+        })
+      }
+    }
     try {
       const flow = await flowStore.update(request.params.id, token, parsed.data)
       return flow ? flow : reply.code(404).send({ error: 'Flow not found' })
@@ -533,6 +600,17 @@ export async function buildServer(config: ApiConfig, overrides: ServerOverrides 
           transport: http(config.ETHEREUM_RPC_URL),
         })
         const settlement = parsed.data.address as Address
+        // Sweep-style settle() succeeds on dust, so simulation alone would let anyone spend relayer
+        // gas by sending one unit of USDC to any settlement address.
+        const held = await publicClient.readContract({
+          address: CHAIN.ethereum.tokens.USDC,
+          abi: [{ type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ name: '', type: 'uint256' }] }] as const,
+          functionName: 'balanceOf',
+          args: [settlement],
+        })
+        if (held < MIN_SETTLE_USDC_BASE) {
+          return reply.code(409).send({ error: 'Settlement does not hold enough USDC to relay a payout' })
+        }
         await publicClient.simulateContract({
           account,
           address: settlement,
@@ -805,58 +883,222 @@ function paymasterRequestAllowed(
   const parameters = record(request.params.parameters)
   const feeMode = record(parameters?.fee_mode)
   if (!transaction || parameters?.version !== '0x1' || !feeMode) return false
+  // On execute the account signs whatever `typed_data` carries, so that is what must be checked;
+  // the `calls` array only exists on build.
+  const executing = request.method === 'paymaster_executeTransaction'
 
   if (flow.phase === 'bridging-to-starknet') {
-    if (!['deploy_and_invoke', 'invoke'].includes(String(transaction.type))) return false
     if (feeMode.mode !== 'sponsored') return false
+    const type = String(transaction.type)
+    if (!['deploy', 'deploy_and_invoke', 'invoke'].includes(type)) return false
+    if (type !== 'invoke' && !expectedDeployment(record(transaction.deployment), flow)) return false
+    if (type === 'deploy') return true
     const invoke = record(transaction.invoke)
-    if (!feltEquals(invoke?.user_address, flow.starknetAccount)) return false
-    if (request.method === 'paymaster_executeTransaction') return true
-    const calls = Array.isArray(invoke?.calls) ? invoke.calls : []
-    return calls.length === 1 && feltEquals(record(calls[0])?.to, CHAIN.starknet.cctp.messageTransmitterV2)
+    if (!invoke || !feltEquals(invoke.user_address, flow.starknetAccount)) return false
+    const calls = executing ? typedDataCalls(record(invoke.typed_data)) : requestCalls(invoke.calls)
+    return (
+      calls !== undefined &&
+      calls.length === 1 &&
+      isCall(calls[0], CHAIN.starknet.cctp.messageTransmitterV2, STARKNET_SELECTORS.receive_message)
+    )
   }
 
   if (flow.phase === 'pool-depositing') {
     if (transaction.type !== 'invoke_and_apply_action' || !privateUsdcFee(feeMode)) return false
     const invoke = record(transaction.invoke)
-    if (!feltEquals(invoke?.user_address, flow.starknetAccount)) return false
-    if (request.method === 'paymaster_executeTransaction') return true
-    if (!expectedPool(transaction)) return false
-    const calls = Array.isArray(invoke?.calls) ? invoke.calls : []
-    const approve = calls.length === 1 ? record(calls[0]) : undefined
-    const calldata = Array.isArray(approve?.calldata) ? approve.calldata : []
-    return feltEquals(approve?.to, CHAIN.starknet.usdc) && feltEquals(calldata[0], CHAIN.starknet.privacyPool)
+    if (!invoke || !feltEquals(invoke.user_address, flow.starknetAccount)) return false
+    const applyAction = record(transaction.apply_action)
+    if (!applyAction) return false
+    if (executing ? !expectedApplyActionsCall(applyAction) : !expectedPool(applyAction)) return false
+    const calls = executing ? typedDataCalls(record(invoke.typed_data)) : requestCalls(invoke.calls)
+    if (!calls || calls.length !== 1) return false
+    const approve = calls[0]
+    return (
+      isCall(approve, CHAIN.starknet.usdc, STARKNET_SELECTORS.approve) &&
+      feltEquals(approve?.calldata[0], CHAIN.starknet.privacyPool)
+    )
   }
 
   if (flow.phase === 'pool-withdrawing') {
     if (transaction.type !== 'apply_action' || !privateUsdcFee(feeMode)) return false
-    return request.method === 'paymaster_executeTransaction' || expectedPool(transaction)
+    const applyAction = record(transaction.apply_action)
+    if (!applyAction) return false
+    return executing ? expectedApplyActionsCall(applyAction) : expectedPool(applyAction)
   }
 
   return false
+}
+
+interface NormalizedCall {
+  to: unknown
+  selector: unknown
+  calldata: unknown[]
+}
+
+function requestCalls(value: unknown): NormalizedCall[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const calls: NormalizedCall[] = []
+  for (const entry of value) {
+    const call = record(entry)
+    if (!call) return undefined
+    calls.push({
+      to: call.to,
+      selector: call.selector,
+      calldata: Array.isArray(call.calldata) ? call.calldata : [],
+    })
+  }
+  return calls
+}
+
+/**
+ * The calls the account will actually authorise. Only canonical SNIP-9 v1/v2 payloads for Starknet
+ * mainnet parse; mixed or non-canonical layouts are rejected so the checked calls are the signed
+ * calls.
+ */
+function typedDataCalls(typedData: Record<string, unknown> | undefined): NormalizedCall[] | undefined {
+  return parseOutsideExecution(typedData, CHAIN.starknet.chainId)?.calls
+}
+
+function isCall(call: NormalizedCall | undefined, to: string, selector: string): boolean {
+  return call !== undefined && feltEquals(call.to, to) && feltEquals(call.selector, selector)
+}
+
+/** Only the flow's own OpenZeppelin account, with its public key as salt and sole constructor arg. */
+function expectedDeployment(deployment: Record<string, unknown> | undefined, flow: PublicFlow): boolean {
+  if (!deployment) return false
+  const calldata = Array.isArray(deployment.calldata) ? deployment.calldata : undefined
+  return (
+    feltEquals(deployment.class_hash, CHAIN.starknet.ozAccountClassHash) &&
+    feltEquals(deployment.address, flow.starknetAccount) &&
+    calldata !== undefined &&
+    calldata.length === 1 &&
+    feltEquals(deployment.salt, calldata[0]) &&
+    (deployment.version === 1 || deployment.version === '1' || deployment.version === '0x1')
+  )
+}
+
+function expectedApplyActionsCall(applyAction: Record<string, unknown>): boolean {
+  const call = record(applyAction.apply_actions_call)
+  return (
+    call !== undefined &&
+    feltEquals(call.to, CHAIN.starknet.privacyPool) &&
+    feltEquals(call.selector, STARKNET_SELECTORS.apply_actions)
+  )
 }
 
 function privateUsdcFee(feeMode: Record<string, unknown>): boolean {
   return feeMode.mode === 'sponsored_private' && feltEquals(feeMode.pool_fee_token, CHAIN.starknet.usdc)
 }
 
-function expectedPool(transaction: Record<string, unknown>): boolean {
-  return feltEquals(record(transaction.apply_action)?.pool_address, CHAIN.starknet.privacyPool)
-}
-
-function feltEquals(actual: unknown, expected: string): boolean {
-  try {
-    return (typeof actual === 'string' || typeof actual === 'number' || typeof actual === 'bigint') &&
-      BigInt(actual) === BigInt(expected)
-  } catch {
-    return false
-  }
+function expectedPool(applyAction: Record<string, unknown>): boolean {
+  return feltEquals(applyAction.pool_address, CHAIN.starknet.privacyPool)
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined
+}
+
+/** Clients start the burn with `keccak256(utf8(flow.id))` as the on-chain flow id. */
+function onChainFlowId(flowId: string): Hex {
+  return keccak256(stringToHex(flowId))
+}
+
+interface EntryBurnOwner {
+  /** Id of the flow the burn names on-chain. */
+  flowId: string
+  /** Write capability for that flow when it is not the flow being advanced. */
+  token?: string
+}
+
+/**
+ * Resolve which flow the verified burn belongs to. Either the current flow is named on-chain, or the
+ * caller presents the named flow's write capability (recovery). Anything else is a stranger.
+ */
+async function entryBurnOwner(
+  flowStore: FlowStore,
+  flow: PublicFlow,
+  burnFlowId: Hex,
+  release: { flowId: string; token: string } | undefined,
+): Promise<EntryBurnOwner | undefined> {
+  if (onChainFlowId(flow.id).toLowerCase() === burnFlowId.toLowerCase()) return { flowId: flow.id }
+  if (!release || onChainFlowId(release.flowId).toLowerCase() !== burnFlowId.toLowerCase()) return undefined
+  const named = await flowStore.read(release.flowId, release.token)
+  if (!named || !feltEquals(named.starknetAccount, flow.starknetAccount)) return undefined
+  if (named.ethereumSender.toLowerCase() !== flow.ethereumSender.toLowerCase()) return undefined
+  return { flowId: release.flowId, token: release.token }
+}
+
+/**
+ * One live flow per burn. The first flow to verify a burn claims it. A recovery flow that proved
+ * control of the named flow takes the claim over atomically and retires that flow, so of several
+ * racing recovery flows exactly one wins; any other holder must have failed first.
+ */
+async function claimEntryBurn(
+  flowStore: FlowStore,
+  stateStore: StateStore,
+  flow: PublicFlow,
+  owner: EntryBurnOwner,
+): Promise<boolean> {
+  const key = `qrt:entry-claim:${(flow.entryTxHash ?? '').toLowerCase()}`
+  const holder = await stateStore.claim(key, flow.id, FlowStore.ttlSeconds)
+  if (holder === flow.id) return true
+  const previous = await flowStore.peek(holder)
+  const controlsHolder = owner.token !== undefined && holder === owner.flowId
+  if (previous && previous.phase !== 'failed' && !controlsHolder) return false
+  if (!(await stateStore.compareAndSwap(key, holder, flow.id, FlowStore.ttlSeconds))) return false
+  if (controlsHolder && previous && previous.phase !== 'failed' && previous.phase !== 'completed') {
+    try {
+      await flowStore.update(holder, owner.token!, {
+        phase: 'failed',
+        failureReason: 'Superseded by same-tab recovery',
+      })
+    } catch {
+      // Already terminal; the claim has moved regardless.
+    }
+  }
+  return true
+}
+
+async function verifiedEntry(verifier: EntryVerifier, flow: PublicFlow): Promise<{ flowId: Hex } | undefined> {
+  try {
+    return await verifier({
+      txHash: flow.entryTxHash ?? '',
+      ethereumSender: flow.ethereumSender,
+      starknetAccount: flow.starknetAccount,
+    })
+  } catch {
+    return undefined
+  }
+}
+
+function liveEntryVerifier(rpcUrl: string, entryRouter: Address): EntryVerifier {
+  const client = createPublicClient({ chain: mainnet, transport: http(rpcUrl) })
+  return async ({ txHash, ethereumSender, starknetAccount }) => {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return undefined
+    // Clients only ask after observing the confirmation, so a short wait covers RPC lag without
+    // letting a well-formed unknown hash pin the handler for long.
+    const receipt = await client.waitForTransactionReceipt({ hash: txHash as Hex, timeout: 15_000 })
+    return matchEntryEvent(receipt, entryRouter, ethereumSender, starknetAccount)
+  }
+}
+
+export function matchEntryEvent(
+  receipt: { status: string; logs: Parameters<typeof parseEventLogs>[0]['logs'] },
+  entryRouter: Address,
+  ethereumSender: string,
+  starknetAccount: string,
+): { flowId: Hex } | undefined {
+  if (receipt.status !== 'success') return undefined
+  const events = parseEventLogs({ abi: ENTRY_ROUTER_ABI, eventName: 'EntryStarted', logs: receipt.logs })
+  const match = events.find(
+    (event) =>
+      event.address.toLowerCase() === entryRouter.toLowerCase() &&
+      event.args.sender.toLowerCase() === ethereumSender.toLowerCase() &&
+      event.args.starknetRecipient === BigInt(starknetAccount),
+  )
+  return match ? { flowId: match.args.flowId } : undefined
 }
 
 function flowToken(value: string | string[] | undefined): string | undefined {

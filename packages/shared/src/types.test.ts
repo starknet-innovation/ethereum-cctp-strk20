@@ -22,3 +22,21 @@ describe('cross-chain transaction hash validation', () => {
     )
   })
 })
+
+describe('exit-side data never reaches the server-side flow record', () => {
+  it('rejects a settlement address on any transition', () => {
+    expect(
+      flowUpdateSchema.safeParse({
+        phase: 'bridging-to-ethereum',
+        settlementAddress: '0x2222222222222222222222222222222222222222',
+      }).success,
+    ).toBe(false)
+  })
+
+  it('rejects transaction hashes on exit-side phases but allows bare transitions', () => {
+    for (const phase of ['bridging-to-ethereum', 'settling', 'completed'] as const) {
+      expect(flowUpdateSchema.safeParse({ phase, txHash: `0x${'a'.repeat(64)}` }).success).toBe(false)
+      expect(flowUpdateSchema.safeParse({ phase }).success).toBe(true)
+    }
+  })
+})

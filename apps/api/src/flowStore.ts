@@ -8,7 +8,7 @@ interface StoredFlow {
 }
 
 export class FlowStore {
-  private static readonly ttlSeconds = 8 * 24 * 60 * 60
+  static readonly ttlSeconds = 8 * 24 * 60 * 60
 
   constructor(
     private readonly secret: string,
@@ -36,6 +36,12 @@ export class FlowStore {
     return this.state
       .set(this.key(flow.id), JSON.stringify({ flow, tokenHash: this.digest(writeToken) }), FlowStore.ttlSeconds)
       .then(() => ({ flow, writeToken }))
+  }
+
+  /** Unauthenticated read for server-internal cross-flow checks. Never expose through a route. */
+  async peek(id: string): Promise<PublicFlow | undefined> {
+    const serialized = await this.state.get(this.key(id))
+    return serialized ? (JSON.parse(serialized) as StoredFlow).flow : undefined
   }
 
   async read(id: string, token: string): Promise<PublicFlow | undefined> {

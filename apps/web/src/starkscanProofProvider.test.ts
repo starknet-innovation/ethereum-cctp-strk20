@@ -225,6 +225,63 @@ describe('StarkscanProofProvider', () => {
     expect(requests).toEqual(['POST', 'GET'])
   })
 
+  it('starts a fresh job when the saved checkpoint belongs to a different invocation', async () => {
+    let checkpoint: ProofCheckpoint | undefined = {
+      version: 1,
+      provingBlockId: 12_446_898,
+      requestHash: 'stale-hash-from-an-earlier-build',
+      idempotencyKey: 'stale-idempotency-key',
+      job: {
+        jobId: 'prv_stale0000000000000000000',
+        status: 'queued',
+        terminal: false,
+        pollToken: 'e'.repeat(64),
+      },
+    }
+    const checkpointStore: ProofCheckpointStore = {
+      load: () => checkpoint,
+      save: (value) => {
+        checkpoint = structuredClone(value)
+      },
+      clear: () => {
+        checkpoint = undefined
+      },
+    }
+    const requests: Array<{ method: string; url: string; idempotencyKey: string | null }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      requests.push({
+        method: init?.method ?? 'GET',
+        url: String(input),
+        idempotencyKey: new Headers(init?.headers).get('idempotency-key'),
+      })
+      return new Response(
+        JSON.stringify({
+          jobId: 'prv_fresh00000000000000000000',
+          status: 'succeeded',
+          terminal: true,
+          pollToken: 'f'.repeat(64),
+          result: { proof: 'fresh-proof', proof_facts: [], l2_to_l1_messages: [] },
+        }),
+        { status: 202, headers: { 'content-type': 'application/json' } },
+      )
+    }
+    const provider = new StarkscanProofProvider({
+      apiBaseUrl: 'https://api.example',
+      rpcUrl: 'https://rpc.example',
+      poolAddress: '0x123',
+      fetchImpl,
+      checkpointStore,
+    })
+    // The SDK re-randomises rebuilt invocations, so the calldata never matches the saved hash.
+    const rebuilt = { type: 'INVOKE', sender_address: '0x123', calldata: ['0x9'] } as unknown as ProofInvocation
+
+    await expect(provider.prove(rebuilt, 12_446_898)).resolves.toMatchObject({ data: 'fresh-proof' })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.method).toBe('POST')
+    expect(requests[0]?.idempotencyKey).not.toBe('stale-idempotency-key')
+    expect(checkpoint?.job?.jobId).toBe('prv_fresh00000000000000000000')
+  })
+
   it('surfaces daily proof exhaustion without burst retries', async () => {
     let calls = 0
     const provider = new StarkscanProofProvider({

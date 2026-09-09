@@ -26,7 +26,6 @@ export function applyFlowUpdate(flow: PublicFlow, update: FlowUpdate, now = new 
 
   const occurredAt = update.occurredAt ?? now.toISOString()
   const patch: Partial<PublicFlow> = { phase: update.phase, updatedAt: occurredAt }
-  if (update.settlementAddress) patch.settlementAddress = update.settlementAddress
   if (update.failureReason) patch.failureReason = update.failureReason
 
   if (update.txHash) {
@@ -44,16 +43,10 @@ export function applyFlowUpdate(flow: PublicFlow, update: FlowUpdate, now = new 
   return { ...flow, ...patch }
 }
 
+// Only entry-side hashes are recorded; exit-side hashes would join the entry to the recipient.
 function transactionField(
   phase: FlowPhase,
-):
-  | 'entryTxHash'
-  | 'inboundMintTxHash'
-  | 'poolDepositTxHash'
-  | 'poolExitTxHash'
-  | 'outboundMintTxHash'
-  | 'settlementTxHash'
-  | undefined {
+): 'entryTxHash' | 'inboundMintTxHash' | 'poolDepositTxHash' | undefined {
   switch (phase) {
     case 'entry-submitted':
       return 'entryTxHash'
@@ -61,12 +54,6 @@ function transactionField(
       return 'inboundMintTxHash'
     case 'privacy-delay':
       return 'poolDepositTxHash'
-    case 'bridging-to-ethereum':
-      return 'poolExitTxHash'
-    case 'settling':
-      return 'outboundMintTxHash'
-    case 'completed':
-      return 'settlementTxHash'
     default:
       return undefined
   }

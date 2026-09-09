@@ -1,8 +1,10 @@
 import {
   CHAIN,
   CCTP_FAST_FINALITY_THRESHOLD,
+  POC_DEPLOYMENTS,
   TOKENS,
   canTransition,
+  feltEquals,
   type FlowPhase,
   type PublicFlow,
   type RouteQuote,
@@ -353,20 +355,15 @@ async function main() {
           identity,
           privateAmount: BigInt(required(state.privateAmount, 'private amount')),
           settlement: required(state.settlement, 'settlement address'),
-          cctpExitAnonymizer: required(
-            (await api.config()).starknet.cctpExitAnonymizer,
-            'Starknet CCTP exit anonymizer',
-          ),
+          cctpExitAnonymizer: POC_DEPLOYMENTS.starknet.cctpExitAnonymizer,
           cctpMaxFee: BigInt(state.quote.outboundCctpMaxFeeBase),
           capability: capability(state),
         })
         state.updatedAt = new Date().toISOString()
         save(state)
       }
-      await transition(api, state, 'bridging-to-ethereum', {
-        txHash: required(state.exitTxHash, 'private exit transaction'),
-        settlementAddress: required(state.settlement, 'settlement address'),
-      })
+      // Exit-side hashes and the settlement address stay out of the backend record on purpose.
+      await transition(api, state, 'bridging-to-ethereum')
       state.stage = 'bridging-to-ethereum'
       state.updatedAt = new Date().toISOString()
       save(state)
@@ -401,7 +398,7 @@ async function main() {
         )
       }
       state.finalOutput = output.toString()
-      await transition(api, state, 'completed', { txHash: final.txHash })
+      await transition(api, state, 'completed')
       state.stage = 'completed'
       state.identity.privateKey = ''
       state.identity.viewingKey = '0'
@@ -713,9 +710,19 @@ async function refreshPreparedFlow(
 function assertBackendConfig(config: Awaited<ReturnType<typeof import('../../web/src/api.js')['api']['config']>>) {
   if (config.environment !== 'mainnet') throw new Error('Backend is not configured for mainnet')
   if (!config.ready) throw new Error(`Backend is not ready: ${config.missing.join(', ')}`)
-  required(config.ethereum.entryRouter, 'Ethereum entry router')
-  required(config.ethereum.exitSettlementFactory, 'Ethereum settlement factory')
-  required(config.starknet.cctpExitAnonymizer, 'Starknet CCTP exit anonymizer')
+  const entryRouter = required(config.ethereum.entryRouter, 'Ethereum entry router')
+  const factory = required(config.ethereum.exitSettlementFactory, 'Ethereum settlement factory')
+  const anonymizer = required(config.starknet.cctpExitAnonymizer, 'Starknet CCTP exit anonymizer')
+  // The canary is the deployment verifier: refuse a backend that names other contracts.
+  if (entryRouter.toLowerCase() !== POC_DEPLOYMENTS.ethereum.entryRouter.toLowerCase()) {
+    throw new Error(`Backend entry router ${entryRouter} is not the reviewed deployment`)
+  }
+  if (factory.toLowerCase() !== POC_DEPLOYMENTS.ethereum.exitSettlementFactory.toLowerCase()) {
+    throw new Error(`Backend settlement factory ${factory} is not the reviewed deployment`)
+  }
+  if (!feltEquals(anonymizer, POC_DEPLOYMENTS.starknet.cctpExitAnonymizer)) {
+    throw new Error(`Backend CCTP exit anonymizer ${anonymizer} is not the reviewed deployment`)
+  }
 }
 
 async function assertWalletFunding(
@@ -752,8 +759,8 @@ async function submitEntry(args: {
   walletClient: ReturnType<typeof createWalletClient>
 }): Promise<Hex> {
   const { state, account, ethereumClient, walletClient } = args
-  const config = await (await import('../../web/src/api.js')).api.config()
-  const entryRouter = required(config.ethereum.entryRouter, 'Ethereum entry router') as Address
+  // Preflight already checked the backend names these; use the pinned values from here on.
+  const entryRouter: Address = POC_DEPLOYMENTS.ethereum.entryRouter
   const amount = BigInt(state.quote.inputAmountBase)
 
   if (state.inputToken !== 'ETH') {
@@ -813,9 +820,8 @@ async function predictSettlement(args: {
   recoverAfter: number
   ethereumClient: ReturnType<typeof createPublicClient>
 }): Promise<Address> {
-  const config = await (await import('../../web/src/api.js')).api.config()
   return args.ethereumClient.readContract({
-    address: required(config.ethereum.exitSettlementFactory, 'Ethereum settlement factory') as Address,
+    address: POC_DEPLOYMENTS.ethereum.exitSettlementFactory,
     abi: SETTLEMENT_FACTORY_ABI,
     functionName: 'predict',
     args: [
@@ -875,7 +881,7 @@ async function transition(
   api: typeof import('../../web/src/api.js')['api'],
   state: CanaryState,
   phase: FlowPhase,
-  options: { txHash?: string; settlementAddress?: string; occurredAt?: string } = {},
+  options: { txHash?: string; occurredAt?: string } = {},
 ): Promise<PublicFlow> {
   const flow = await api.getFlow(state.flowId, state.writeToken)
   if (flow.phase === phase) return flow
