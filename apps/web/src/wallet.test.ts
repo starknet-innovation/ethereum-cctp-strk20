@@ -126,39 +126,42 @@ describe('Ethereum receipt polling', () => {
 
   it('bounds a receipt-race retry by the original deadline', async () => {
     let currentTime = 100
-    const wait = vi
-      .fn()
-      .mockImplementationOnce(async () => {
-        currentTime += 9
-        throw new TransactionReceiptNotFoundError({ hash: HASH })
-      })
-      .mockResolvedValueOnce({ status: 'success' })
+    let attempts = 0
+    const wait = vi.fn(async () => {
+      attempts += 1
+      if (attempts === 1) currentTime += 8
+      if (attempts === 2) currentTime += 1
+      if (attempts <= 2) throw new TransactionReceiptNotFoundError({ hash: HASH })
+      return { status: 'success' }
+    })
     const retry = vi.fn(async (delayMs: number) => {
       currentTime += delayMs
     })
 
     await waitForEthereumReceipt(wait, HASH, 10, retry, () => currentTime)
 
-    expect(retry).toHaveBeenCalledWith(0)
-    expect(wait).toHaveBeenNthCalledWith(2, { hash: HASH, timeout: 1 })
+    expect(retry).toHaveBeenCalledTimes(2)
+    expect(retry).toHaveBeenNthCalledWith(1, 0)
+    expect(retry).toHaveBeenNthCalledWith(2, 0)
+    expect(wait).toHaveBeenNthCalledWith(3, { hash: HASH, timeout: 1 })
   })
 
-  it('limits the final receipt window to one immediate retry', async () => {
+  it('keeps retrying transient visibility errors until the deadline is exhausted', async () => {
     let currentTime = 100
     const wait = vi.fn(async () => {
-      currentTime = 109
+      currentTime += 1
       throw new TransactionReceiptNotFoundError({ hash: HASH })
     })
     const retry = vi.fn(async (delayMs: number) => {
       currentTime += delayMs
     })
 
-    await expect(waitForEthereumReceipt(wait, HASH, 10, retry, () => currentTime)).rejects.toBeInstanceOf(
+    await expect(waitForEthereumReceipt(wait, HASH, 3, retry, () => currentTime)).rejects.toBeInstanceOf(
       WaitForTransactionReceiptTimeoutError,
     )
 
-    expect(wait).toHaveBeenCalledTimes(2)
-    expect(retry).toHaveBeenCalledTimes(1)
+    expect(wait).toHaveBeenCalledTimes(3)
+    expect(retry).toHaveBeenCalledTimes(2)
   })
 })
 
