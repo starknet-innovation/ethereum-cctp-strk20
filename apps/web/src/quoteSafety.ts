@@ -1,8 +1,11 @@
 import type { QuoteRequest, RouteQuote } from '@privacy-round-trip/shared'
 
 const FEE_CAP_FIELDS = [
+  'inboundCctpProtocolFeeBase',
   'inboundCctpMaxFeeBase',
   'estimatedStarknetFeesBase',
+  'outboundCctpProtocolFeeBase',
+  'outboundCctpForwardingFeeBase',
   'outboundCctpMaxFeeBase',
 ] as const satisfies readonly (keyof RouteQuote)[]
 

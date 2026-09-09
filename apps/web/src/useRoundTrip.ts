@@ -382,6 +382,15 @@ export function useRoundTrip() {
     if (!active && !flow) setQuote(undefined)
   }, [active, flow])
 
+  const resetCompleted = useCallback(() => {
+    if (active || busy || flow?.phase !== 'completed') return
+    setFlow(undefined)
+    setQuote(undefined)
+    setError(undefined)
+    setRecoveryAvailable(false)
+    setMessage('Ready for another mainnet route.')
+  }, [active, busy, flow?.phase])
+
   return {
     config,
     wallet,
@@ -397,6 +406,7 @@ export function useRoundTrip() {
     preview,
     start,
     invalidateQuote,
+    resetCompleted,
   }
 }
 

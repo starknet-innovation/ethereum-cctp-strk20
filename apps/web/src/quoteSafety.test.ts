@@ -64,6 +64,15 @@ describe('execution quote safety', () => {
     })).toThrow('A route fee increased or its disclosure changed')
   })
 
+  it('requires another review when a disclosed CCTP component increases at the same total cap', () => {
+    expect(() => executionQuoteForReviewedRoute(reviewed, {
+      ...reviewed,
+      quoteId: 'q_fresh',
+      outboundCctpProtocolFeeBase: '100001',
+      outboundCctpForwardingFeeBase: '999999',
+    })).toThrow('A route fee increased or its disclosure changed')
+  })
+
   it('requires another review when a newly deployed backend adds a previously undisclosed fee', () => {
     const legacy = { ...reviewed }
     delete legacy.estimatedStarknetFeesBase

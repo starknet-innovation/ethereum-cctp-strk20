@@ -42,6 +42,9 @@ delay is therefore `max(user delay, proof readiness)`.
 - Refreshes prices and Circle caps immediately before entry, but preserves the reviewed bridge and
   payout floors. A higher fee cap or a changed Uniswap pool returns the refreshed route to review
   before any transaction is submitted.
+- Formats every displayed base-unit amount with the token recorded in its quote, never a mutable
+  form selection. A completed route remains read-only until the user explicitly starts another
+  transfer, which clears the completed flow and its quote together.
 - Generates an independent random Stark signing key and privacy viewing key in memory.
 - Submits the Ethereum approval (if needed) and entry transaction.
 - Polls Circle Iris, submits the sponsored Starknet mint, signs proof invocations locally, and
