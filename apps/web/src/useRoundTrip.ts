@@ -24,6 +24,7 @@ import {
 } from './starknet.js'
 import {
   connectRabby,
+  isUserRejectedRequest,
   predictSettlement,
   submitEntry,
   waitForEthereumTransaction,
@@ -58,6 +59,7 @@ export function useRoundTrip() {
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [active, setActive] = useState(false)
+  const [recoveryAvailable, setRecoveryAvailable] = useState(false)
   const [now, setNow] = useState(Date.now())
   const identityRef = useRef<EphemeralIdentity | undefined>(undefined)
   // React state disables the button on the next render; this synchronous lock closes the smaller
@@ -145,10 +147,12 @@ export function useRoundTrip() {
         throw cause
       }
       setActive(true)
+      setRecoveryAvailable(false)
       setError(undefined)
 
       let currentFlow: PublicFlow | undefined
       let writeToken: string | undefined
+      let entryWriteAttempted = false
       const identity = createEphemeralIdentity()
       identityRef.current = identity
       const progress = createRecoveryProgress()
@@ -198,8 +202,12 @@ export function useRoundTrip() {
           quote: freshQuote,
           starknetRecipient: identity.address,
           onApproval: () => setMessage('Approval confirmed. Confirm the entry transaction in Rabby.'),
+          onEntryAttempt: () => {
+            entryWriteAttempted = true
+          },
         })
         note({ entryTxHash: entryHash })
+        setRecoveryAvailable(true)
         await transition('entry-submitted', { txHash: entryHash })
         setMessage('Entry submitted. Waiting for Ethereum confirmation…')
         await waitForEthereumTransaction(connected, entryHash)
@@ -314,14 +322,19 @@ export function useRoundTrip() {
         identityRef.current = undefined
         progressRef.current = createRecoveryProgress()
         setActive(false)
+        setRecoveryAvailable(false)
       } catch (cause) {
         const reason = errorText(cause)
         setError(reason)
         const entryWasSubmitted = Boolean(progress.entryTxHash)
+        const submissionIsUncertain = entryWriteAttempted && !entryWasSubmitted && !isUserRejectedRequest(cause)
+        const recoveryMaterialMustBePreserved = entryWasSubmitted || submissionIsUncertain
         setMessage(
           entryWasSubmitted
             ? 'The automatic flow stopped. Do not close or reload this tab; the in-memory recovery key is still present.'
-            : 'No entry transaction was submitted and no transfer left Ethereum. You can start again.',
+            : submissionIsUncertain
+              ? 'Rabby may have submitted the entry without returning its hash. Do not close or reload this tab; check Rabby activity and contact the operator.'
+              : 'No entry transaction was submitted and no transfer left Ethereum. You can start again.',
         )
         if (currentFlow && writeToken && currentFlow.phase !== 'failed' && currentFlow.phase !== 'completed') {
           try {
@@ -334,12 +347,13 @@ export function useRoundTrip() {
             // Preserve the original failure; the browser-held secrets remain in memory.
           }
         }
-        if (!entryWasSubmitted) {
+        if (!recoveryMaterialMustBePreserved) {
           clearIdentity(identity)
           identityRef.current = undefined
           progressRef.current = createRecoveryProgress()
           setFlow(undefined)
           setActive(false)
+          setRecoveryAvailable(false)
         }
       } finally {
         setBusy(false)
@@ -362,6 +376,7 @@ export function useRoundTrip() {
     error,
     busy,
     active,
+    recoveryAvailable,
     now,
     connect,
     preview,

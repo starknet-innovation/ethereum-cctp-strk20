@@ -91,6 +91,7 @@ export async function submitEntry(args: {
   quote: RouteQuote
   starknetRecipient: string
   onApproval?: (txHash: Hex) => void
+  onEntryAttempt?: () => void
 }): Promise<Hex> {
   await assertWalletAccount(args.wallet)
   const transport = custom(args.wallet.provider)
@@ -136,6 +137,7 @@ export async function submitEntry(args: {
   // guard immediately adjacent to the value-moving entry write, including the sufficient-allowance
   // path that skips approval entirely.
   await assertWalletAccount(args.wallet)
+  args.onEntryAttempt?.()
   return walletClient.writeContract({
     address: args.entryRouter,
     abi: ENTRY_ABI,
@@ -182,11 +184,12 @@ export async function waitForEthereumReceipt(
   waitForReceipt: ReceiptWaiter,
   hash: Hex,
   timeoutMs: number,
-  retry: () => Promise<void> = () => sleep(1_000),
+  retry: (delayMs: number) => Promise<void> = sleep,
+  now: () => number = Date.now,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs
+  const deadline = now() + timeoutMs
   while (true) {
-    const remaining = deadline - Date.now()
+    const remaining = deadline - now()
     if (remaining <= 0) throw new WaitForTransactionReceiptTimeoutError({ hash })
     try {
       const receipt = await waitForReceipt({ hash, timeout: remaining })
@@ -194,10 +197,23 @@ export async function waitForEthereumReceipt(
       return
     } catch (cause) {
       if (!(cause instanceof TransactionReceiptNotFoundError)) throw cause
-      if (Date.now() >= deadline) throw new WaitForTransactionReceiptTimeoutError({ hash })
-      await retry()
+      const retryWindow = deadline - now()
+      if (retryWindow <= 0) throw new WaitForTransactionReceiptTimeoutError({ hash })
+      await retry(Math.min(1_000, retryWindow))
     }
   }
+}
+
+/** EIP-1193 rejection is the only post-request error that proves the user declined submission. */
+export function isUserRejectedRequest(cause: unknown): boolean {
+  let current = cause
+  const seen = new Set<unknown>()
+  while (typeof current === 'object' && current !== null && !seen.has(current)) {
+    seen.add(current)
+    if ('code' in current && current.code === 4_001) return true
+    current = 'cause' in current ? current.cause : undefined
+  }
+  return false
 }
 
 /** Ensure a cached route still belongs to Rabby's currently selected mainnet account. */

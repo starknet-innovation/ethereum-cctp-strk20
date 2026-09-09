@@ -9,6 +9,7 @@ import {
 import type { RouteQuote } from '@privacy-round-trip/shared'
 import {
   assertWalletAccount,
+  isUserRejectedRequest,
   submitEntry,
   waitForEthereumReceipt,
   type BrowserWallet,
@@ -121,5 +122,30 @@ describe('Ethereum receipt polling', () => {
   it('preserves genuine viem timeouts', async () => {
     const timeout = new WaitForTransactionReceiptTimeoutError({ hash: HASH })
     await expect(waitForEthereumReceipt(async () => Promise.reject(timeout), HASH, 10_000)).rejects.toBe(timeout)
+  })
+
+  it('bounds a receipt-race retry by the original deadline', async () => {
+    const wait = vi
+      .fn()
+      .mockRejectedValueOnce(new TransactionReceiptNotFoundError({ hash: HASH }))
+      .mockResolvedValueOnce({ status: 'success' })
+    const retry = vi.fn(async (_delayMs: number) => undefined)
+    const now = vi.fn().mockReturnValueOnce(100).mockReturnValue(109)
+
+    await waitForEthereumReceipt(wait, HASH, 10, retry, now)
+
+    expect(retry).toHaveBeenCalledWith(1)
+  })
+})
+
+describe('entry submission errors', () => {
+  it('recognizes direct and wrapped EIP-1193 user rejection', () => {
+    expect(isUserRejectedRequest({ code: 4_001 })).toBe(true)
+    expect(isUserRejectedRequest({ cause: { cause: { code: 4_001 } } })).toBe(true)
+  })
+
+  it('keeps transport and RPC failures ambiguous', () => {
+    expect(isUserRejectedRequest({ code: -32_603 })).toBe(false)
+    expect(isUserRejectedRequest(new Error('response lost after broadcast'))).toBe(false)
   })
 })
