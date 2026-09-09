@@ -60,6 +60,9 @@ export function useRoundTrip() {
   const [active, setActive] = useState(false)
   const [now, setNow] = useState(Date.now())
   const identityRef = useRef<EphemeralIdentity | undefined>(undefined)
+  // React state disables the button on the next render; this synchronous lock closes the smaller
+  // window in which two click handlers could both enter start().
+  const startingRef = useRef(false)
   // Browser-only exit-side progress; read by same-tab recovery, never sent to the API.
   const progressRef = useRef<RecoveryProgress>(createRecoveryProgress())
 
@@ -117,6 +120,9 @@ export function useRoundTrip() {
 
   const start = useCallback(
     async (form: TransferForm) => {
+      if (startingRef.current) return
+      startingRef.current = true
+      setBusy(true)
       let connected: BrowserWallet
       try {
         validateForm(form)
@@ -134,9 +140,10 @@ export function useRoundTrip() {
         setWallet(connected)
       } catch (cause) {
         setError(errorText(cause))
+        setBusy(false)
+        startingRef.current = false
         throw cause
       }
-      setBusy(true)
       setActive(true)
       setError(undefined)
 
@@ -336,6 +343,7 @@ export function useRoundTrip() {
         }
       } finally {
         setBusy(false)
+        startingRef.current = false
       }
     },
     [config, quote],

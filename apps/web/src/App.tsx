@@ -257,7 +257,7 @@ export function App() {
               <div className="error-box">
                 <strong>Flow stopped</strong>
                 <span>{roundTrip.error}</span>
-                {roundTrip.flow?.phase === 'failed' && roundTrip.flow.entryTxHash && (
+                {roundTrip.active && (
                   <button type="button" className="recovery-action" onClick={recoverCurrentTab}>
                     Recover this transfer in this tab
                   </button>

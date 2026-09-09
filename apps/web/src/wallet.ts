@@ -108,6 +108,7 @@ export async function submitEntry(args: {
       args: [args.wallet.account, args.entryRouter],
     })
     if (allowance < inputAmount) {
+      await assertWalletAccount(args.wallet)
       const approval = await walletClient.writeContract({
         address: token,
         abi: erc20Abi,
@@ -127,13 +128,14 @@ export async function submitEntry(args: {
         }
         throw cause
       }
-      // The user can select another Rabby account while the approval prompt is open. Do not send
-      // the entry from the stale account captured when the route started.
-      await assertWalletAccount(args.wallet)
     }
   }
 
   const inputAsset = { ETH: 0, USDC: 1, WBTC: 2 }[input]
+  // Account selection can change while the allowance read or approval prompt is pending. Keep this
+  // guard immediately adjacent to the value-moving entry write, including the sufficient-allowance
+  // path that skips approval entirely.
+  await assertWalletAccount(args.wallet)
   return walletClient.writeContract({
     address: args.entryRouter,
     abi: ENTRY_ABI,
