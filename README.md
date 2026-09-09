@@ -45,11 +45,15 @@ or a separately reviewed scoped delegation design.
 Requirements: Node.js 24+, npm, Foundry, Scarb 2.17+.
 
 ```bash
-npm install
-cp apps/api/.env.example apps/api/.env
-cp apps/web/.env.example apps/web/.env.local
+bash scripts/doctor.sh
+npm run setup
 npm run dev
 ```
+
+`setup` uses `npm ci` and creates the two local environment files only when they are absent. Blank
+provider and deployment values are sufficient for tests and the intentionally read-only local UI.
+Coding agents should start with [`AGENTS.md`](AGENTS.md) for safety boundaries, repository maps,
+targeted checks, and cross-layer change rules.
 
 The default configuration is mainnet-only but intentionally has no deployed POC contract
 addresses. The UI remains read-only until those addresses are supplied.
@@ -58,8 +62,9 @@ addresses. The UI remains read-only until those addresses are supplied.
 
 ```bash
 npm run check
-forge test --root contracts/evm
-scarb build --manifest-path contracts/starknet/Scarb.toml
+npm run check:contracts
+# Or run both suites:
+npm run check:all
 ```
 
 Do not deploy or run a real-funds flow until the checklist in `docs/ARCHITECTURE.md` is complete.
