@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
-import { reportFlowFailureBestEffort } from './flowFailure.js'
+import { reportFlowFailureBestEffort, SERVER_SAFE_FAILURE_REASON } from './flowFailure.js'
 
 describe('best-effort flow failure reporting', () => {
   it('returns immediately when the API update never settles', () => {
     const updateFlow = vi.fn(() => new Promise<never>(() => undefined))
 
     expect(
-      reportFlowFailureBestEffort(updateFlow, 'f_stalled', 'write-token', 'entry was not submitted'),
+      reportFlowFailureBestEffort(updateFlow, 'f_stalled', 'write-token'),
     ).toBeUndefined()
     expect(updateFlow).toHaveBeenCalledWith('f_stalled', 'write-token', {
       phase: 'failed',
-      failureReason: 'entry was not submitted',
+      failureReason: SERVER_SAFE_FAILURE_REASON,
     })
   })
 
@@ -20,7 +20,7 @@ describe('best-effort flow failure reporting', () => {
     })
 
     expect(() =>
-      reportFlowFailureBestEffort(updateFlow, 'f_failed', 'write-token', 'original failure'),
+      reportFlowFailureBestEffort(updateFlow, 'f_failed', 'write-token'),
     ).not.toThrow()
   })
 })

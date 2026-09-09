@@ -12,7 +12,7 @@ import {
 import { formatUnits, isAddress, type Address, type Hex } from 'viem'
 import { api } from './api.js'
 import { assertPinnedDeployments } from './deployments.js'
-import { reportFlowFailureBestEffort } from './flowFailure.js'
+import { reportFlowFailureBestEffort, SERVER_SAFE_FAILURE_REASON } from './flowFailure.js'
 import { clearIdentity, createEphemeralIdentity, type EphemeralIdentity } from './identity.js'
 import { createRecoveryProgress, type RecoveryProgress } from './progress.js'
 import {
@@ -326,7 +326,6 @@ export function useRoundTrip() {
         setRecoveryAvailable(false)
       } catch (cause) {
         const reason = errorText(cause)
-        const failureReason = reason.slice(0, 500)
         setError(reason)
         const entryWasSubmitted = Boolean(progress.entryTxHash)
         const submissionIsUncertain = entryWriteAttempted && !entryWasSubmitted && !isUserRejectedRequest(cause)
@@ -346,7 +345,7 @@ export function useRoundTrip() {
           currentFlow = {
             ...currentFlow,
             phase: 'failed',
-            failureReason,
+            failureReason: SERVER_SAFE_FAILURE_REASON,
             updatedAt: new Date().toISOString(),
           }
           setFlow(currentFlow)
@@ -368,7 +367,6 @@ export function useRoundTrip() {
             api.updateFlow,
             failureTarget.id,
             failureTarget.token,
-            failureReason,
           )
         }
       } finally {
