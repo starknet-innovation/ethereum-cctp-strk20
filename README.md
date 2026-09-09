@@ -23,6 +23,11 @@ app fails closed until every deployment address and required upstream is configu
 - USDC or WBTC input: one ERC-20 approval prompt when needed, then one entry transaction prompt.
 - No wallet prompt occurs after the entry transaction.
 
+Before the first prompt, the route review itemizes both swap pool fees, inbound and outbound CCTP
+fees, Circle forwarding, estimated Starknet private-execution fees, and costs paid separately or by
+the service. The estimated recipient amount includes route deductions; Ethereum wallet gas is an
+additional ETH cost shown by Rabby.
+
 The browser generates the Stark account key and pool secret in memory. **Closing or reloading the
 tab while a transfer is active destroys those secrets and can make the funds unrecoverable.** This
 tradeoff is specific to the one/two-prompt POC. A production version needs recoverable key derivation

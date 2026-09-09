@@ -39,9 +39,15 @@ interface IrisFeeRow {
   forwardFee?: { low: number; med: number; high: number }
 }
 
+export interface CctpFeeQuote {
+  protocolFee: bigint
+  forwardingFee: bigint
+  total: bigint
+}
+
 export interface QuoteDependencies {
   quoteSwap(tokenIn: Address, tokenOut: Address, amount: bigint): Promise<{ amount: bigint; fee: number }>
-  cctpMaxFee(source: number, destination: number, amount: bigint, forward: boolean): Promise<bigint>
+  cctpMaxFee(source: number, destination: number, amount: bigint, forward: boolean): Promise<CctpFeeQuote>
 }
 
 export class QuoteService {
@@ -64,12 +70,12 @@ export class QuoteService {
       entryPoolFee = result.fee
     }
 
-    const inboundFee = await this.dependencies.cctpMaxFee(0, 25, bridgeAmount, false)
-    const afterInbound = bridgeAmount - inboundFee
+    const inboundFees = await this.dependencies.cctpMaxFee(0, 25, bridgeAmount, false)
+    const afterInbound = bridgeAmount - inboundFees.total
     if (afterInbound <= this.estimatedStarknetFeesBase) throw new Error('Amount is below route fees')
     const exitBurnAmount = afterInbound - this.estimatedStarknetFeesBase
-    const outboundFee = await this.dependencies.cctpMaxFee(25, 0, exitBurnAmount, true)
-    const settlementUsdc = exitBurnAmount - outboundFee
+    const outboundFees = await this.dependencies.cctpMaxFee(25, 0, exitBurnAmount, true)
+    const settlementUsdc = exitBurnAmount - outboundFees.total
     if (settlementUsdc <= 0n) throw new Error('Amount is below route fees')
 
     let outputAmount = settlementUsdc
@@ -94,11 +100,18 @@ export class QuoteService {
       minimumOutputAmountBase: minimumOutput.toString(),
       entryPoolFee,
       exitPoolFee,
-      inboundCctpMaxFeeBase: inboundFee.toString(),
-      outboundCctpMaxFeeBase: outboundFee.toString(),
+      inboundCctpProtocolFeeBase: inboundFees.protocolFee.toString(),
+      inboundCctpMaxFeeBase: inboundFees.total.toString(),
+      estimatedStarknetFeesBase: this.estimatedStarknetFeesBase.toString(),
+      outboundCctpProtocolFeeBase: outboundFees.protocolFee.toString(),
+      outboundCctpForwardingFeeBase: outboundFees.forwardingFee.toString(),
+      outboundCctpMaxFeeBase: outboundFees.total.toString(),
+      estimatedSettlementUsdcBase: settlementUsdc.toString(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       warnings: [
         'Quotes use direct Uniswap V3 pools and can change before the delayed exit.',
+        'CCTP deductions are maximum authorized fees from current Circle data; the actual fees may be lower.',
+        'Starknet private execution fees are estimated and the actual paymaster amounts are checked before submission.',
         'The five-minute-or-longer delay reduces immediacy but does not prevent amount or timing correlation.',
       ],
     }
@@ -162,7 +175,7 @@ async function irisMaxFee(
   destination: number,
   amount: bigint,
   forward: boolean,
-): Promise<bigint> {
+): Promise<CctpFeeQuote> {
   const suffix = forward ? '?forward=true' : ''
   const response = await fetch(
     `https://iris-api.circle.com/v2/burn/USDC/fees/${source}/${destination}${suffix}`,
@@ -173,7 +186,8 @@ async function irisMaxFee(
   const row = rows.find((item) => item.finalityThreshold === CCTP_FAST_FINALITY_THRESHOLD)
   if (!row) throw new Error('Circle did not return a fast-transfer fee')
   const protocolFee = ceilDiv(amount * BigInt(Math.ceil(row.minimumFee)), 10_000n)
-  return protocolFee + BigInt(forward ? (row.forwardFee?.high ?? 0) : 0)
+  const forwardingFee = BigInt(forward ? (row.forwardFee?.high ?? 0) : 0)
+  return { protocolFee, forwardingFee, total: protocolFee + forwardingFee }
 }
 
 function ceilDiv(value: bigint, divisor: bigint): bigint {

@@ -34,6 +34,9 @@ delay is therefore `max(user delay, proof readiness)`.
 
 - Connects a Rabby EOA and enforces Ethereum chain ID 1.
 - Collects input/output token, amount, recipient, and delay.
+- Shows the complete pre-signing amount path: included Uniswap pool fees and price impact, separate
+  CCTP protocol and forwarding caps, estimated private paymaster fees, the USDC amount before the
+  payout swap, slippage floor, wallet gas paid separately, and service-paid costs.
 - Generates an independent random Stark signing key and privacy viewing key in memory.
 - Submits the Ethereum approval (if needed) and entry transaction.
 - Polls Circle Iris, submits the sponsored Starknet mint, signs proof invocations locally, and
@@ -63,7 +66,9 @@ the bodies.
 ### Light API (`apps/api`)
 
 - Returns allow-listed mainnet configuration.
-- Quotes direct Uniswap V3 pools and current CCTP V2 fee ceilings.
+- Quotes direct Uniswap V3 pools and current CCTP V2 fee ceilings, returning the protocol and
+  forwarding components separately plus the configured Starknet fee reserve and pre-exit-swap
+  USDC amount.
 - Keeps POC flow progress in a short-lived, capability-protected Valkey store. The record holds
   entry-side data only; it never accepts the settlement address or any exit-side transaction hash,
   because each of those resolves on-chain to the recipient and would join it to the entry.

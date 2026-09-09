@@ -32,7 +32,10 @@ const config: ApiConfig = {
 
 const dependencies: QuoteDependencies = {
   quoteSwap: async (_in, _out, amount) => ({ amount: amount * 2n, fee: 500 }),
-  cctpMaxFee: async (_source, _destination, _amount, forward) => (forward ? 1_500_000n : 100_000n),
+  cctpMaxFee: async (_source, _destination, _amount, forward) =>
+    forward
+      ? { protocolFee: 500_000n, forwardingFee: 1_000_000n, total: 1_500_000n }
+      : { protocolFee: 100_000n, forwardingFee: 0n, total: 100_000n },
 }
 
 /** Records which flow each entry burn was started for, the way the router event would. */

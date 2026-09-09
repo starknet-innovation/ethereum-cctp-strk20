@@ -29,8 +29,13 @@ const USDC_QUOTE: RouteQuote = {
   minimumOutputAmountBase: '1',
   entryPoolFee: 500,
   exitPoolFee: 500,
+  inboundCctpProtocolFeeBase: '0',
   inboundCctpMaxFeeBase: '0',
+  estimatedStarknetFeesBase: '0',
+  outboundCctpProtocolFeeBase: '0',
+  outboundCctpForwardingFeeBase: '0',
   outboundCctpMaxFeeBase: '0',
+  estimatedSettlementUsdcBase: '1',
   expiresAt: new Date(Date.now() + 60_000).toISOString(),
   warnings: [],
 }

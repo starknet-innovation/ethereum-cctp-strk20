@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { TOKENS, type FlowPhase, type TokenSymbol } from '@privacy-round-trip/shared'
-import { formatUnits } from 'viem'
+import { type FlowPhase, type TokenSymbol } from '@privacy-round-trip/shared'
+import { FeeBreakdown } from './FeeBreakdown.js'
 import { formatTokenAmount } from './wallet.js'
 import { INITIAL_FORM, useRoundTrip, type TransferForm } from './useRoundTrip.js'
 
@@ -213,12 +213,13 @@ export function App() {
                   <strong>{formatTokenAmount(roundTrip.quote.estimatedOutputAmountBase, form.outputToken)}</strong>
                   <small>Minimum {formatTokenAmount(roundTrip.quote.minimumOutputAmountBase, form.outputToken)}</small>
                 </div>
-                <dl>
-                  <div><dt>USDC entering CCTP</dt><dd>{formatUnits(BigInt(roundTrip.quote.estimatedBridgeAmountBase), TOKENS.USDC.decimals)} USDC</dd></div>
-                  <div><dt>Slippage protection</dt><dd>1.00%</dd></div>
-                  <div><dt>Wallet prompts</dt><dd>{form.inputToken === 'ETH' ? '1' : '≤ 2'}</dd></div>
-                  <div><dt>Privacy delay</dt><dd>{form.delayMinutes} min</dd></div>
-                </dl>
+                <FeeBreakdown
+                  quote={roundTrip.quote}
+                  inputToken={form.inputToken}
+                  outputToken={form.outputToken}
+                  walletPrompts={form.inputToken === 'ETH' ? '1 transaction' : 'up to 2 transactions'}
+                  delayMinutes={form.delayMinutes}
+                />
                 <button className="primary invert" disabled={!ready || roundTrip.busy} onClick={() => void start()}>
                   Start private round trip
                 </button>
