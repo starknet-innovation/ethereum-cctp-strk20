@@ -19,12 +19,15 @@ printf '%s\n' \
   'printf "11.0.0\\n"' \
   > "$fake_bin/npm"
 
+# The single-quoted expressions belong to the generated fake executables.
+# shellcheck disable=SC2016
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'if [[ "${FAKE_FORGE_FAIL:-0}" == "1" ]]; then exit 9; fi' \
   'printf "forge Version: 1.0.0-stable\\n"' \
   > "$fake_bin/forge"
 
+# shellcheck disable=SC2016
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'if [[ "${FAKE_SCARB_FAIL:-0}" == "1" ]]; then exit 9; fi' \

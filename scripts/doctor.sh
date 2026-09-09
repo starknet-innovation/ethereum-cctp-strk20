@@ -3,7 +3,10 @@
 set -u
 
 project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$project_root"
+if ! cd "$project_root"; then
+  echo "error: could not enter project root: $project_root" >&2
+  exit 1
+fi
 
 failures=0
 

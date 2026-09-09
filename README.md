@@ -42,7 +42,7 @@ or a separately reviewed scoped delegation design.
 
 ## Local development
 
-Requirements: Node.js 24+, npm, Foundry, Scarb 2.17+.
+Requirements: Node.js 24, npm, Foundry, Scarb 2.17+.
 
 ```bash
 bash scripts/doctor.sh
