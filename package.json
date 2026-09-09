@@ -14,6 +14,7 @@
     "build": "npm run build -w @privacy-round-trip/shared && npm run build -w @privacy-round-trip/api && npm run build -w @privacy-round-trip/web",
     "setup": "bash scripts/setup.sh",
     "doctor": "bash scripts/doctor.sh",
+    "predev": "npm run build -w @privacy-round-trip/shared",
     "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @privacy-round-trip/api\" \"npm run dev -w @privacy-round-trip/web\"",
     "canary:mainnet": "npm run start -w @privacy-round-trip/canary --",
     "test": "npm run test:doctor && npm run build -w @privacy-round-trip/shared && npm run test --workspaces --if-present",
