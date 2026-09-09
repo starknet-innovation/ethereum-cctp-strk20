@@ -53,15 +53,35 @@ else
 fi
 
 if command -v forge >/dev/null 2>&1; then
-  forge_version="$(forge --version 2>/dev/null | head -n 1)"
-  pass "${forge_version:-Foundry forge is installed}"
+  forge_output="$(forge --version 2>/dev/null)"
+  forge_status=$?
+  forge_version="${forge_output%%$'\n'*}"
+  if [[ $forge_status -eq 0 && -n "$forge_version" ]]; then
+    pass "$forge_version"
+  else
+    fail "forge exists but could not run"
+  fi
 else
   warn "forge is missing; it is required only for EVM contract checks"
 fi
 
 if command -v scarb >/dev/null 2>&1; then
-  scarb_version="$(scarb --version 2>/dev/null | head -n 1)"
-  pass "${scarb_version:-Scarb is installed}"
+  scarb_output="$(scarb --version 2>/dev/null)"
+  scarb_status=$?
+  scarb_version="${scarb_output%%$'\n'*}"
+  if [[ $scarb_status -ne 0 || -z "$scarb_version" ]]; then
+    fail "scarb exists but could not run"
+  elif [[ "$scarb_version" =~ ^scarb[[:space:]]+([0-9]+)\.([0-9]+) ]]; then
+    scarb_major="${BASH_REMATCH[1]}"
+    scarb_minor="${BASH_REMATCH[2]}"
+    if (( 10#$scarb_major > 2 || (10#$scarb_major == 2 && 10#$scarb_minor >= 17) )); then
+      pass "$scarb_version"
+    else
+      fail "Scarb 2.17 or newer is required; found $scarb_version"
+    fi
+  else
+    fail "could not parse Scarb version: $scarb_version"
+  fi
 else
   warn "scarb is missing; it is required only for Starknet contract checks"
 fi
