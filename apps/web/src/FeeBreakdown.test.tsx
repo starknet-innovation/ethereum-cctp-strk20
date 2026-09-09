@@ -16,7 +16,6 @@ const quote: RouteQuote = {
   inboundCctpProtocolFeeBase: '250000',
   inboundCctpMaxFeeBase: '250000',
   estimatedStarknetFeesBase: '2000000',
-  maximumStarknetFeesBase: '4000000',
   outboundCctpProtocolFeeBase: '400000',
   outboundCctpForwardingFeeBase: '600000',
   outboundCctpMaxFeeBase: '1000000',
@@ -58,7 +57,6 @@ describe('fee breakdown', () => {
     const legacy: RouteQuote = { ...quote }
     delete legacy.inboundCctpProtocolFeeBase
     delete legacy.estimatedStarknetFeesBase
-    delete legacy.maximumStarknetFeesBase
     delete legacy.outboundCctpProtocolFeeBase
     delete legacy.outboundCctpForwardingFeeBase
     delete legacy.estimatedSettlementUsdcBase

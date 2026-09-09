@@ -15,7 +15,6 @@ const reviewed: RouteQuote = {
   inboundCctpProtocolFeeBase: '10000',
   inboundCctpMaxFeeBase: '10000',
   estimatedStarknetFeesBase: '2000000',
-  maximumStarknetFeesBase: '4000000',
   outboundCctpProtocolFeeBase: '100000',
   outboundCctpForwardingFeeBase: '1000000',
   outboundCctpMaxFeeBase: '1100000',
@@ -52,7 +51,7 @@ describe('execution quote safety', () => {
 
   it('requires another review when a newly deployed backend adds a previously undisclosed fee', () => {
     const legacy = { ...reviewed }
-    delete legacy.maximumStarknetFeesBase
+    delete legacy.estimatedStarknetFeesBase
 
     expect(() => executionQuoteForReviewedRoute(legacy, {
       ...reviewed,

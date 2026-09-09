@@ -37,7 +37,6 @@ export interface RouteQuote {
   inboundCctpProtocolFeeBase?: string
   inboundCctpMaxFeeBase: string
   estimatedStarknetFeesBase?: string
-  maximumStarknetFeesBase?: string
   outboundCctpProtocolFeeBase?: string
   outboundCctpForwardingFeeBase?: string
   outboundCctpMaxFeeBase: string
