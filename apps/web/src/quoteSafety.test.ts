@@ -41,6 +41,21 @@ describe('execution quote safety', () => {
     expect(execution.minimumOutputAmountBase).toBe(reviewed.minimumOutputAmountBase)
   })
 
+  it('accepts an equivalent request regardless of property insertion order', () => {
+    const fresh: RouteQuote = {
+      ...reviewed,
+      quoteId: 'q_reordered',
+      request: {
+        slippageBps: reviewed.request.slippageBps,
+        amount: reviewed.request.amount,
+        outputToken: reviewed.request.outputToken,
+        inputToken: reviewed.request.inputToken,
+      },
+    }
+
+    expect(executionQuoteForReviewedRoute(reviewed, fresh).quoteId).toBe('q_reordered')
+  })
+
   it('requires another review when a fee cap increases', () => {
     expect(() => executionQuoteForReviewedRoute(reviewed, {
       ...reviewed,

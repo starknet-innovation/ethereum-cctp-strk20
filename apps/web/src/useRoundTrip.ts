@@ -15,7 +15,7 @@ import { assertPinnedDeployments } from './deployments.js'
 import { reportFlowFailureBestEffort, SERVER_SAFE_FAILURE_REASON } from './flowFailure.js'
 import { clearIdentity, createEphemeralIdentity, type EphemeralIdentity } from './identity.js'
 import { createRecoveryProgress, type RecoveryProgress } from './progress.js'
-import { executionQuoteForReviewedRoute } from './quoteSafety.js'
+import { executionQuoteForReviewedRoute, quoteRequestsEqual } from './quoteSafety.js'
 import {
   sponsoredMint,
   sponsoredPrivacyDeposit,
@@ -130,7 +130,7 @@ export function useRoundTrip() {
       let connected: BrowserWallet
       try {
         validateForm(form)
-        if (!quote || JSON.stringify(quote.request) !== JSON.stringify(quoteRequest(form))) {
+        if (!quote || !quoteRequestsEqual(quote.request, quoteRequest(form))) {
           throw new Error('The route changed. Request a fresh mainnet quote before starting.')
         }
         if (!config?.ready) {

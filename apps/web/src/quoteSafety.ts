@@ -1,4 +1,4 @@
-import type { RouteQuote } from '@privacy-round-trip/shared'
+import type { QuoteRequest, RouteQuote } from '@privacy-round-trip/shared'
 
 const FEE_CAP_FIELDS = [
   'inboundCctpMaxFeeBase',
@@ -15,7 +15,7 @@ export function executionQuoteForReviewedRoute(
   reviewed: RouteQuote,
   fresh: RouteQuote,
 ): RouteQuote {
-  if (JSON.stringify(fresh.request) !== JSON.stringify(reviewed.request)) {
+  if (!quoteRequestsEqual(fresh.request, reviewed.request)) {
     throw new Error('The refreshed route does not match the route you reviewed.')
   }
   if (
@@ -38,6 +38,15 @@ export function executionQuoteForReviewedRoute(
     minimumBridgeAmountBase: reviewed.minimumBridgeAmountBase,
     minimumOutputAmountBase: reviewed.minimumOutputAmountBase,
   }
+}
+
+export function quoteRequestsEqual(left: QuoteRequest, right: QuoteRequest): boolean {
+  return (
+    left.inputToken === right.inputToken &&
+    left.outputToken === right.outputToken &&
+    left.amount === right.amount &&
+    left.slippageBps === right.slippageBps
+  )
 }
 
 function feeRequiresReview(reviewed: RouteQuote[keyof RouteQuote], fresh: RouteQuote[keyof RouteQuote]): boolean {
