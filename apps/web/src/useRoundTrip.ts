@@ -117,6 +117,7 @@ export function useRoundTrip() {
 
   const start = useCallback(
     async (form: TransferForm) => {
+      let connected: BrowserWallet
       try {
         validateForm(form)
         if (!quote || JSON.stringify(quote.request) !== JSON.stringify(quoteRequest(form))) {
@@ -127,12 +128,14 @@ export function useRoundTrip() {
         }
         // Only the reviewed deployments compiled into this bundle are ever used.
         assertPinnedDeployments(config)
+        // Refresh the provider selection at the transaction boundary. The account cached when the
+        // user first connected may no longer be Rabby's active account by the time they start.
+        connected = await connectRabby()
+        setWallet(connected)
       } catch (cause) {
         setError(errorText(cause))
         throw cause
       }
-      const connected = wallet ?? (await connectRabby())
-      setWallet(connected)
       setBusy(true)
       setActive(true)
       setError(undefined)
@@ -307,7 +310,12 @@ export function useRoundTrip() {
       } catch (cause) {
         const reason = errorText(cause)
         setError(reason)
-        setMessage('The automatic flow stopped. Do not close or reload this tab; the in-memory recovery key is still present.')
+        const entryWasSubmitted = Boolean(progress.entryTxHash)
+        setMessage(
+          entryWasSubmitted
+            ? 'The automatic flow stopped. Do not close or reload this tab; the in-memory recovery key is still present.'
+            : 'No entry transaction was submitted and no transfer left Ethereum. You can start again.',
+        )
         if (currentFlow && writeToken && currentFlow.phase !== 'failed' && currentFlow.phase !== 'completed') {
           try {
             currentFlow = await api.updateFlow(currentFlow.id, writeToken, {
@@ -319,11 +327,18 @@ export function useRoundTrip() {
             // Preserve the original failure; the browser-held secrets remain in memory.
           }
         }
+        if (!entryWasSubmitted) {
+          clearIdentity(identity)
+          identityRef.current = undefined
+          progressRef.current = createRecoveryProgress()
+          setFlow(undefined)
+          setActive(false)
+        }
       } finally {
         setBusy(false)
       }
     },
-    [config, quote, wallet],
+    [config, quote],
   )
 
   const invalidateQuote = useCallback(() => {

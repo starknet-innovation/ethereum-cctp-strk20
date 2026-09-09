@@ -253,7 +253,17 @@ export function App() {
               <i className={roundTrip.busy || roundTrip.active ? 'pulse' : ''} />
               <span>{roundTrip.message}</span>
             </div>
-            {roundTrip.error && <div className="error-box"><strong>Flow stopped</strong>{roundTrip.error}</div>}
+            {roundTrip.error && (
+              <div className="error-box">
+                <strong>Flow stopped</strong>
+                <span>{roundTrip.error}</span>
+                {roundTrip.flow?.phase === 'failed' && roundTrip.flow.entryTxHash && (
+                  <button type="button" className="recovery-action" onClick={recoverCurrentTab}>
+                    Recover this transfer in this tab
+                  </button>
+                )}
+              </div>
+            )}
           </section>
         </section>
 
@@ -302,4 +312,11 @@ function humanPhase(phase: FlowPhase): string {
 
 function short(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`
+}
+
+/** Load the recovery bridge without reloading, so it can copy React's in-memory secrets first. */
+function recoverCurrentTab(): void {
+  const script = document.createElement('script')
+  script.src = `/recover-current-tab.js?${Date.now()}`
+  document.body.append(script)
 }

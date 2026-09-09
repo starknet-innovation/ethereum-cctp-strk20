@@ -95,6 +95,7 @@ label > span, .amount-field > span { display: block; margin-bottom: 10px; font: 
 .live-message i { margin-top: 4px; flex: none; width: 7px; height: 7px; border-radius: 50%; background: rgba(242,240,233,.3); }
 .live-message i.pulse { background: var(--lime); animation: pulse 1.3s infinite; }
 .error-box { color: #ff9d7c; }
+.recovery-action { margin-top: 9px; min-height: 42px; border: 1px solid var(--lime); background: var(--lime); color: var(--ink); font-weight: 750; }
 .timeline-wrap { padding: 25px 0; }
 .countdown { display: flex; justify-content: space-between; align-items: center; color: var(--lime); border: 1px solid var(--lime); padding: 14px; margin-bottom: 15px; font: 11px 'DM Mono', monospace; }
 .countdown strong { font-size: 22px; }
