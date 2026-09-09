@@ -12,9 +12,10 @@ This is unaudited, mainnet-only software that can move real assets.
   the user explicitly asks. Normal development and tests are transaction-free.
 - Never print, commit, or move secrets into `VITE_*` variables. Browser configuration is public;
   RPC, Starkscan, paymaster, relayer, cache, and flow-token credentials are server-only.
-- Preserve the privacy split: the API must not receive the Stark private key, final recipient,
-  settlement address, or exit-side transaction hashes. See `docs/ARCHITECTURE.md` for the exact
-  allowed state.
+- Preserve the privacy split: the API must never receive the Stark private key. The final recipient
+  and settlement address may transit only the deliberately stateless exit routes after the delay;
+  they and exit-side transaction hashes must never be persisted with or joined to entry-side flow
+  state. See `docs/ARCHITECTURE.md` for the exact allowed state.
 - Keep the application mainnet-only and fail-closed. Do not add testnet fallbacks, placeholder
   deployment addresses, or permissive validation to make a flow appear ready.
 - Treat `vendor/starkware-libs-starknet-privacy-sdk-0.14.3-rc.6.tgz` as pinned source provenance.
