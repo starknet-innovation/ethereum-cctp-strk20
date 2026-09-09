@@ -12,6 +12,7 @@ import {
 import { formatUnits, isAddress, type Address, type Hex } from 'viem'
 import { api } from './api.js'
 import { assertPinnedDeployments } from './deployments.js'
+import { reportFlowFailureBestEffort } from './flowFailure.js'
 import { clearIdentity, createEphemeralIdentity, type EphemeralIdentity } from './identity.js'
 import { createRecoveryProgress, type RecoveryProgress } from './progress.js'
 import {
@@ -325,6 +326,7 @@ export function useRoundTrip() {
         setRecoveryAvailable(false)
       } catch (cause) {
         const reason = errorText(cause)
+        const failureReason = reason.slice(0, 500)
         setError(reason)
         const entryWasSubmitted = Boolean(progress.entryTxHash)
         const submissionIsUncertain = entryWriteAttempted && !entryWasSubmitted && !isUserRejectedRequest(cause)
@@ -336,16 +338,18 @@ export function useRoundTrip() {
               ? 'Rabby may have submitted the entry without returning its hash. Do not close or reload this tab; check Rabby activity and contact the operator.'
               : 'No entry transaction was submitted and no transfer left Ethereum. You can start again.',
         )
-        if (currentFlow && writeToken && currentFlow.phase !== 'failed' && currentFlow.phase !== 'completed') {
-          try {
-            currentFlow = await api.updateFlow(currentFlow.id, writeToken, {
-              phase: 'failed',
-              failureReason: reason.slice(0, 500),
-            })
-            setFlow(currentFlow)
-          } catch {
-            // Preserve the original failure; the browser-held secrets remain in memory.
+        const failureTarget =
+          currentFlow && writeToken && currentFlow.phase !== 'failed' && currentFlow.phase !== 'completed'
+            ? { id: currentFlow.id, token: writeToken }
+            : undefined
+        if (recoveryMaterialMustBePreserved && failureTarget && currentFlow) {
+          currentFlow = {
+            ...currentFlow,
+            phase: 'failed',
+            failureReason,
+            updatedAt: new Date().toISOString(),
           }
+          setFlow(currentFlow)
         }
         if (!recoveryMaterialMustBePreserved) {
           clearIdentity(identity)
@@ -354,6 +358,18 @@ export function useRoundTrip() {
           setFlow(undefined)
           setActive(false)
           setRecoveryAvailable(false)
+        }
+        // Release all browser-local state before starting the unbounded, best-effort PATCH. A
+        // stalled API must not keep the Start button or synchronous click lock engaged.
+        setBusy(false)
+        startingRef.current = false
+        if (failureTarget) {
+          reportFlowFailureBestEffort(
+            api.updateFlow,
+            failureTarget.id,
+            failureTarget.token,
+            failureReason,
+          )
         }
       } finally {
         setBusy(false)
