@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { TOKENS, type FlowPhase, type TokenSymbol } from '@privacy-round-trip/shared'
-import { formatUnits } from 'viem'
+import { type FlowPhase, type TokenSymbol } from '@privacy-round-trip/shared'
+import { FeeBreakdown } from './FeeBreakdown.js'
 import { formatTokenAmount } from './wallet.js'
 import { INITIAL_FORM, useRoundTrip, type TransferForm } from './useRoundTrip.js'
 
@@ -60,6 +60,13 @@ export function App() {
 
   const ready = roundTrip.config?.ready === true
   const prompts = form.inputToken === 'ETH' ? '1 Rabby transaction' : 'Up to 2 Rabby transactions'
+  const quotedRoute =
+    roundTrip.quote &&
+    roundTrip.quote.request.inputToken === form.inputToken &&
+    roundTrip.quote.request.outputToken === form.outputToken &&
+    roundTrip.quote.request.amount === form.amount
+      ? roundTrip.quote
+      : undefined
 
   return (
     <div className="shell">
@@ -116,7 +123,7 @@ export function App() {
               )}
             </div>
 
-            <fieldset disabled={roundTrip.active || roundTrip.busy}>
+            <fieldset disabled={roundTrip.active || roundTrip.busy || Boolean(roundTrip.flow)}>
               <label className="amount-field">
                 <span>You send</span>
                 <div>
@@ -142,8 +149,11 @@ export function App() {
                 <span>Recipient receives</span>
                 <div>
                   <output>
-                    {roundTrip.quote
-                      ? formatTokenAmount(roundTrip.quote.estimatedOutputAmountBase, form.outputToken).split(' ')[0]
+                    {quotedRoute
+                      ? formatTokenAmount(
+                          quotedRoute.estimatedOutputAmountBase,
+                          quotedRoute.request.outputToken,
+                        ).split(' ')[0]
                       : '—'}
                   </output>
                   <select
@@ -206,19 +216,31 @@ export function App() {
               {roundTrip.flow && <span className={`phase phase-${roundTrip.flow.phase}`}>{humanPhase(roundTrip.flow.phase)}</span>}
             </div>
 
-            {roundTrip.quote && !roundTrip.active && !roundTrip.flow ? (
+            {quotedRoute && !roundTrip.active && !roundTrip.flow ? (
               <div className="quote-review">
                 <div className="quote-main">
                   <span>Estimated arrival</span>
-                  <strong>{formatTokenAmount(roundTrip.quote.estimatedOutputAmountBase, form.outputToken)}</strong>
-                  <small>Minimum {formatTokenAmount(roundTrip.quote.minimumOutputAmountBase, form.outputToken)}</small>
+                  <strong>
+                    {formatTokenAmount(
+                      quotedRoute.estimatedOutputAmountBase,
+                      quotedRoute.request.outputToken,
+                    )}
+                  </strong>
+                  <small>
+                    {quotedRoute.request.outputToken === 'USDC' ? 'Quote reference' : 'On-chain minimum'}{' '}
+                    {formatTokenAmount(
+                      quotedRoute.minimumOutputAmountBase,
+                      quotedRoute.request.outputToken,
+                    )}
+                  </small>
                 </div>
-                <dl>
-                  <div><dt>USDC entering CCTP</dt><dd>{formatUnits(BigInt(roundTrip.quote.estimatedBridgeAmountBase), TOKENS.USDC.decimals)} USDC</dd></div>
-                  <div><dt>Slippage protection</dt><dd>1.00%</dd></div>
-                  <div><dt>Wallet prompts</dt><dd>{form.inputToken === 'ETH' ? '1' : '≤ 2'}</dd></div>
-                  <div><dt>Privacy delay</dt><dd>{form.delayMinutes} min</dd></div>
-                </dl>
+                <FeeBreakdown
+                  quote={quotedRoute}
+                  inputToken={quotedRoute.request.inputToken}
+                  outputToken={quotedRoute.request.outputToken}
+                  walletPrompts={quotedRoute.request.inputToken === 'ETH' ? '1 transaction' : 'up to 2 transactions'}
+                  delayMinutes={form.delayMinutes}
+                />
                 <button className="primary invert" disabled={!ready || roundTrip.busy} onClick={() => void start()}>
                   Start private round trip
                 </button>
@@ -240,6 +262,16 @@ export function App() {
                     )
                   })}
                 </ol>
+                {roundTrip.flow.phase === 'completed' && (
+                  <button
+                    type="button"
+                    className="primary invert"
+                    disabled={roundTrip.active || roundTrip.busy}
+                    onClick={roundTrip.resetCompleted}
+                  >
+                    Start another transfer
+                  </button>
+                )}
               </div>
             ) : (
               <div className="empty-state">

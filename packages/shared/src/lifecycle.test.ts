@@ -17,8 +17,13 @@ const quote: RouteQuote = {
   minimumOutputAmountBase: '4950000',
   entryPoolFee: 500,
   exitPoolFee: 3000,
+  inboundCctpProtocolFeeBase: '1000000',
   inboundCctpMaxFeeBase: '1000000',
+  estimatedStarknetFeesBase: '2000000',
+  outboundCctpProtocolFeeBase: '500000',
+  outboundCctpForwardingFeeBase: '500000',
   outboundCctpMaxFeeBase: '1000000',
+  estimatedSettlementUsdcBase: '2996000000',
   expiresAt: '2030-01-01T00:00:00.000Z',
   warnings: [],
 }

@@ -79,10 +79,22 @@ label > span, .amount-field > span { display: block; margin-bottom: 10px; font: 
 .quote-main span { font: 500 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .08em; }
 .quote-main strong { display: block; margin: 8px 0 3px; font-size: clamp(30px, 3vw, 45px); letter-spacing: -.06em; color: var(--lime); }
 .quote-main small { opacity: .6; }
-.quote-review dl { margin: 28px 0 0; border-top: 1px solid rgba(242,240,233,.2); }
+.fee-breakdown { margin-top: 28px; }
+.fee-intro { margin: 0 0 24px; padding: 13px 14px; border: 1px solid rgba(207,252,104,.35); color: rgba(242,240,233,.72); font: 10px/1.55 'DM Mono', monospace; }
+.fee-breakdown h3 { margin: 22px 0 8px; color: var(--lime); font: 600 10px 'DM Mono', monospace; letter-spacing: .09em; text-transform: uppercase; }
+.quote-review dl { margin: 0; border-top: 1px solid rgba(242,240,233,.2); }
 .quote-review dl div { display: flex; justify-content: space-between; gap: 20px; padding: 13px 0; border-bottom: 1px solid rgba(242,240,233,.14); font-size: 12px; }
 .quote-review dt { opacity: .55; }
-.quote-review dd { margin: 0; text-align: right; }
+.quote-review dd { max-width: 58%; margin: 0; text-align: right; }
+.quote-review dd span { display: block; }
+.quote-review dd small { display: block; margin-top: 4px; color: rgba(242,240,233,.48); font: 9px/1.45 'DM Mono', monospace; }
+.quote-review .fee-row dd > span { color: #ff9d7c; }
+.quote-review .total-row { color: var(--lime); font-weight: 700; }
+.quote-review .external-costs dd > span { color: rgba(242,240,233,.78); }
+.quote-warnings { margin: 22px 0 0; padding: 0; list-style: none; color: rgba(242,240,233,.5); font: 9px/1.55 'DM Mono', monospace; }
+.quote-warnings li { position: relative; padding-left: 13px; }
+.quote-warnings li + li { margin-top: 7px; }
+.quote-warnings li:before { content: '·'; position: absolute; left: 0; color: var(--orange); }
 .consent-note { text-align: center; opacity: .48; font: 10px 'DM Mono', monospace; }
 .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 8px; }
 .empty-state span { max-width: 280px; opacity: .56; font-size: 13px; line-height: 1.5; }

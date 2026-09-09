@@ -75,6 +75,8 @@ export const STARKNET_SELECTORS = {
  */
 export const MAX_PRIVATE_FEE_BASE = 2_000_000n
 export const MAX_PRIVATE_FEE_BPS = 2_000
+/** Two private paymaster actions occur in a complete route: pool deposit and pool exit. */
+export const MAX_PRIVATE_TOTAL_FEE_BASE = MAX_PRIVATE_FEE_BASE * 2n
 
 /** Compare two felt/address encodings by value (leading zeros, case, decimal all normalise). */
 export function feltEquals(actual: unknown, expected: unknown): boolean {

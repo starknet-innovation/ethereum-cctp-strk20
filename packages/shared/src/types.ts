@@ -33,8 +33,14 @@ export interface RouteQuote {
   minimumOutputAmountBase: string
   entryPoolFee: number
   exitPoolFee: number
+  /** Optional during rolling upgrades and for flows quoted before fee-component disclosure. */
+  inboundCctpProtocolFeeBase?: string
   inboundCctpMaxFeeBase: string
+  estimatedStarknetFeesBase?: string
+  outboundCctpProtocolFeeBase?: string
+  outboundCctpForwardingFeeBase?: string
   outboundCctpMaxFeeBase: string
+  estimatedSettlementUsdcBase?: string
   expiresAt: string
   warnings: string[]
 }
