@@ -561,12 +561,6 @@ function felt(value: unknown): string {
   return `0x${BigInt(value).toString(16)}`
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined
-}
-
 function u256(value: bigint): [string, string] {
   if (value < 0n) throw new Error('u256 cannot be negative')
   const mask = (1n << 128n) - 1n
