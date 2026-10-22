@@ -1,4 +1,4 @@
-FROM node:24.8.0-bookworm-slim AS builder
+FROM node:24.22.1-bookworm-slim AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -13,7 +13,7 @@ COPY apps/api apps/api
 COPY packages/shared packages/shared
 RUN npm run build -w @privacy-round-trip/shared && npm run build -w @privacy-round-trip/api
 
-FROM node:24.8.0-bookworm-slim AS production-deps
+FROM node:24.22.1-bookworm-slim AS production-deps
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -23,7 +23,7 @@ COPY packages/shared/package.json packages/shared/package.json
 COPY vendor vendor
 RUN npm ci --omit=dev --workspace @privacy-round-trip/api --workspace @privacy-round-trip/shared
 
-FROM node:24.8.0-bookworm-slim AS runtime
+FROM node:24.22.1-bookworm-slim AS runtime
 
 ENV NODE_ENV=production
 WORKDIR /app
