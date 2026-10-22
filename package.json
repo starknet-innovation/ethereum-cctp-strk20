@@ -30,6 +30,6 @@
     "@types/node": "^24.3.0",
     "concurrently": "^9.2.5",
     "typescript": "^5.9.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   }
 }
